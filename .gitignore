@@ -1,0 +1,18 @@
+node_modules/
+dist/
+bin/
+obj/
+wwwroot/
+.env
+*.user
+.vs/
+.vscode/
+appsettings.*.local.json
+# Logs, local tooling and anything that can hold secrets or keys
+*.log
+TestResults/
+.idea/
+*.pfx
+*.pem
+secrets.json
+dpkeys/
