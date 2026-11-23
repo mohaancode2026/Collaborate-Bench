@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using CollaborateBench.Api.Models;
+using CollaborateBench.Api.Services;
 
 namespace CollaborateBench.Api.Ai;
 
@@ -35,8 +36,7 @@ public static class Rules
             Relocate = Regex.IsMatch(text, "relocat", RegexOptions.IgnoreCase),
             Source = "rules",
         };
-        p.Name = lines.Take(6).FirstOrDefault(l => Regex.IsMatch(l, @"^[A-Za-z][A-Za-z.'-]+(\s+[A-Za-z][A-Za-z.'-]+){1,3}$")
-                                                   && !Regex.IsMatch(l, "resume|curriculum|summary|profile|developer|engineer", RegexOptions.IgnoreCase)) ?? "";
+        p.Name = FindName(lines, p.Email);
         var tm = Regex.Match(text, @"((senior|sr\.?|lead|principal|staff|junior)\s+)?([A-Za-z.#+/ ]{2,30}?)\s(developer|engineer|architect|analyst|consultant|tester|administrator|scientist|manager|sdet)\b", RegexOptions.IgnoreCase);
         p.Title = tm.Success ? Regex.Replace(tm.Value.Trim(), @"\s+", " ") : (p.Skills.FirstOrDefault() is { } s ? s + " Consultant" : "");
         var ex = Regex.Match(text, @"(\d{1,2})\+?\s*(years|yrs)", RegexOptions.IgnoreCase);
@@ -52,8 +52,107 @@ public static class Rules
         var si = lines.FindIndex(l => Regex.IsMatch(l, @"^(professional\s+)?(summary|profile|objective)", RegexOptions.IgnoreCase));
         var summary = si >= 0 && si + 1 < lines.Count ? lines[si + 1] : lines.FirstOrDefault(l => l.Length > 80 && !l.Contains('|')) ?? "";
         p.Summary = summary.Length > 240 ? summary[..240] : summary;
+        ExtractDetails(text, lines, p);
         return p;
     }
+
+    // ---------- details vendors ask for ----------
+    private static readonly Regex Degree = new(@"\b(B\.?\s?Tech|B\.?\s?E\b|B\.?\s?S\b|B\.?\s?Sc|BCA|Bachelor'?s?|Master'?s?|M\.?\s?Tech|M\.?\s?S\b|M\.?\s?Sc|MCA|MBA|M\.?\s?E\b|Ph\.?\s?D)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>True when the line names a degree (B.Tech, Bachelor of …, MS, MBA, PhD …).</summary>
+    public static bool IsDegree(string line) => Degree.IsMatch(line);
+
+    /// <summary>LinkedIn link, passport number (only when labelled), highest degree, certifications and availability.</summary>
+    public static void ExtractDetails(string text, IReadOnlyList<string> lines, ParsedResume p)
+    {
+        var li = Regex.Match(text, @"(?:https?://)?(?:[a-z]{2,3}\.)?linkedin\.com/in/[A-Za-z0-9\-_%]+", RegexOptions.IgnoreCase);
+        if (li.Success) p.LinkedInUrl = LinkedIn.ProfileUrl(li.Value.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? li.Value : "https://" + li.Value) ?? "";
+
+        var pp = Regex.Match(text, @"passport\s*(?:no\.?|number|num|#)?\s*[:\-]?\s*([A-Z]{0,2}[0-9][A-Z0-9]{5,10})\b", RegexOptions.IgnoreCase);
+        if (pp.Success) p.Passport = pp.Groups[1].Value.ToUpperInvariant();
+
+        // Degrees: prefer the highest (PhD > Master > Bachelor), taking the whole line ("MS Computer Science, UNT, 2014").
+        static int Rank(string l) => Regex.IsMatch(l, @"ph\.?\s?d", RegexOptions.IgnoreCase) ? 3
+            : Regex.IsMatch(l, @"\b(master|m\.?\s?tech|m\.?\s?s\b|m\.?\s?sc|mca|mba|m\.?\s?e\b)", RegexOptions.IgnoreCase) ? 2 : 1;
+        var degrees = lines.Where(l => l.Length <= 200 && Degree.IsMatch(l) && !Regex.IsMatch(l, @"^(education|academic)", RegexOptions.IgnoreCase)).ToList();
+        if (degrees.Count > 0) p.Education = Regex.Replace(degrees.OrderByDescending(Rank).First(), @"\s+", " ").Trim(' ', '•', '-', '*', '·');
+
+        var certs = lines.Where(l => l.Length is > 8 and <= 160 && Regex.IsMatch(l, @"certified|certification|certificate", RegexOptions.IgnoreCase)
+                                     && !Regex.IsMatch(l, @"^(certifications?|certificates?)\s*:?\s*$", RegexOptions.IgnoreCase))
+            .Select(l => Regex.Replace(l, @"^(certifications?\s*:\s*|[•\-*·▪]\s*)", "", RegexOptions.IgnoreCase).Trim()).Distinct().Take(5).ToList();
+        if (certs.Count > 0) { var all = string.Join("; ", certs); p.Certifications = all.Length > 480 ? all[..480] : all; }
+
+        var av = Regex.Match(text, @"available\s+(immediately|now|(?:from|after|by)\s+[A-Za-z]{3,9}\.?\s+\d{1,2}(?:,?\s*\d{4})?|in\s+\d+\s+weeks?|with\s+\d+\s+weeks?\s+notice)", RegexOptions.IgnoreCase);
+        if (av.Success) p.Availability = char.ToUpperInvariant(av.Groups[1].Value[0]) + av.Groups[1].Value[1..];
+        else if (Regex.IsMatch(text, @"\b(\d+)\s*weeks?\s*notice", RegexOptions.IgnoreCase)) p.Availability = Regex.Match(text, @"\b\d+\s*weeks?\s*notice", RegexOptions.IgnoreCase).Value;
+    }
+
+    // ---------- candidate name ----------
+    // Words that never belong in a person's name: section headings, job words, contact labels.
+    private static readonly Regex NotAName = new(
+        @"\b(resume|résumé|curriculum|vitae|cv|bio|summary|profile|objective|experience|education|skills?|technical|professional|career|contact|" +
+        @"email|e-mail|phone|mobile|cell|address|linkedin|github|portfolio|references?|certifications?|projects?|employment|work|history|" +
+        @"developer|engineer|architect|analyst|consultant|tester|administrator|admin|scientist|manager|lead|senior|sr|junior|jr|principal|staff|" +
+        @"specialist|associate|intern|director|devops|sdet|qa|full|stack|frontend|backend|software|data|cloud|java|python|react|net|sql|" +
+        @"united|states|usa|remote|visa|citizen|green|card|available|immediately|open|relocation|years?|yrs)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex Credentials = new(@"(,?\s*\b(PMP|CSM|CSPO|MBA|MS|M\.S\.|BS|B\.S\.|PhD|Ph\.D\.|CPA|CISSP|SAFe|ITIL)\b\.?)+\s*$", RegexOptions.IgnoreCase);
+    private static readonly Regex NameShape = new(@"^\p{L}[\p{L}'’.\-]*(\s+\p{L}[\p{L}'’.\-]*){1,4}$");
+
+    /// <summary>
+    /// Finds the candidate's name: an explicit "Name:" label first; otherwise the best name-looking piece of the first
+    /// lines (headers often put name, title and contacts on one line separated by | or •), preferring one that agrees
+    /// with the email address; last resort, the email's local part ("ravi.kumar@…" → "Ravi Kumar").
+    /// </summary>
+    public static string FindName(IReadOnlyList<string> lines, string? email)
+    {
+        var label = lines.Take(25).Select(l => Regex.Match(l, @"^\s*(?:full\s+|candidate\s+|consultant\s+)?name\s*[:\-–]\s*(.+)$", RegexOptions.IgnoreCase))
+            .FirstOrDefault(m => m.Success);
+        if (label != null && Clean(label.Groups[1].Value) is { } labelled && NameShape.IsMatch(labelled)) return Pretty(labelled);
+
+        var local = (email ?? "").Split('@')[0].ToLowerInvariant();
+        var localWords = Regex.Split(local, @"[._\-0-9]+").Where(w => w.Length >= 2).ToList();
+
+        string? best = null; var bestScore = 0.0;
+        for (var i = 0; i < Math.Min(lines.Count, 12); i++)
+        {
+            foreach (var raw in Regex.Split(UnspaceLetters(lines[i]), @"\s*[|•·●▪♦–—\t]\s*|\s{3,}|\s+-\s+|,\s+(?=\S+@)"))
+            {
+                var seg = Clean(raw);
+                if (seg is null || !NameShape.IsMatch(seg) || NotAName.IsMatch(seg) || Regex.IsMatch(seg, @",\s*[A-Z]{2}$")) continue;
+                var words = seg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (words.Any(w => w.Length > 20) || FindSkills(seg).Count > 0) continue;
+                var score = 10.0 - i;                                                        // earlier lines first
+                if (words.All(w => char.IsUpper(w[0]))) score += 3;                         // Title Case or ALL CAPS
+                if (seg == lines[i].Trim()) score += 2;                                      // the whole line is the name
+                var hits = localWords.Count(lw => words.Any(w => w.ToLowerInvariant().Trim('.').StartsWith(lw) || lw.StartsWith(w.ToLowerInvariant().Trim('.'))));
+                score += hits * 6;                                                           // agrees with the email
+                if (score > bestScore) { best = seg; bestScore = score; }
+            }
+        }
+        if (best != null) return Pretty(best);
+
+        // Last resort: "ravi.kumar@…" / "ravi_kumar88@…" → "Ravi Kumar" (a single run-together word isn't trusted).
+        return localWords.Count >= 2 && localWords.All(w => w.All(char.IsLetter)) ? Pretty(string.Join(' ', localWords.Take(4))) : "";
+
+        static string? Clean(string s)
+        {
+            s = Regex.Replace(s, @"^(resume|résumé|cv|curriculum vitae)\s*(of|[:\-–])?\s*", "", RegexOptions.IgnoreCase);
+            s = Credentials.Replace(s, "");
+            s = Regex.Replace(s, @"\s+", " ").Trim(' ', ',', ':', '-', '–', '.');
+            return s.Length is >= 3 and <= 60 ? s : null;
+        }
+    }
+
+    /// <summary>"R A V I   K U M A R" (letter-spaced headings in PDFs) → "RAVI KUMAR".</summary>
+    private static string UnspaceLetters(string line) =>
+        Regex.IsMatch(line, @"^\s*(\p{L} ){3,}\p{L}") ? Regex.Replace(Regex.Replace(line, @"(?<=\p{L}) (?=\p{L}( |$))", ""), @"\s{2,}", " ") : line;
+
+    /// <summary>ALL CAPS or all lower → Title Case; mixed case (McDonald, DeSouza) is kept as written.</summary>
+    private static string Pretty(string name) =>
+        name == name.ToUpperInvariant() || name == name.ToLowerInvariant()
+            ? string.Join(' ', name.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(w => char.ToUpperInvariant(w[0]) + w[1..]))
+            : name;
 
     public static RequirementInput ExtractRequirement(string t)
     {

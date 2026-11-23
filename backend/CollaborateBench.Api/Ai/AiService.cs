@@ -21,7 +21,9 @@ public sealed class AiService(ClaudeClient claude, DataService data, ICurrentUse
             $$""""
             Extract these fields from the resume. JSON keys: name, title, email, phone, location ("City, ST" or "Remote"),
             visa (one of {{string.Join(", ", Domain.Visas)}} or ""), exp (total years, number), rate (hourly USD if stated, else null),
-            skills (array of up to 14 canonical technical skills), summary (1-2 sentence marketable hotlist summary), relocate (boolean).
+            skills (array of up to 14 canonical technical skills), summary (1-2 sentence marketable hotlist summary), relocate (boolean),
+            education (highest degree with school and year, e.g. "MS Computer Science, University of North Texas, 2014", or ""),
+            certifications (professional certifications separated by "; ", or ""), availability (e.g. "Immediately", "2 weeks notice", or "" if not stated).
             RESUME:
             """{{(text.Length > 14000 ? text[..14000] : text)}}"""
             """", 1200, ct);
@@ -39,6 +41,10 @@ public sealed class AiService(ClaudeClient claude, DataService data, ICurrentUse
                 Rate = j["rate"]?.GetValueKind() == JsonValueKind.Number ? (decimal)j["rate"]!.GetValue<double>() : rules.Rate,
                 Skills = skills.Count > 0 ? skills : rules.Skills, Summary = S("summary", rules.Summary),
                 Relocate = j["relocate"]?.GetValueKind() == JsonValueKind.True || rules.Relocate, Source = "claude",
+                // LinkedIn link and passport number come from exact patterns (not the AI) so they are never guessed.
+                LinkedInUrl = rules.LinkedInUrl, Passport = rules.Passport,
+                Education = S("education", rules.Education), Certifications = S("certifications", rules.Certifications),
+                Availability = S("availability", rules.Availability),
             };
         }
         catch (Exception ex) when (ex is InvalidOperationException or FormatException)

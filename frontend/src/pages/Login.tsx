@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { api, ApiError, User } from '../api';
 import { useAuth } from '../auth';
-import { Logo } from '../Layout';
+import { Brand, Icon } from '../Layout';
 import { Alert, Avatar, Field, FieldErrors, Spinner, useToast } from '../ui';
 
 const DEMO = [
@@ -87,56 +87,73 @@ export default function Login() {
   return (
     <div id="loginScreen">
       <div className="login-wrap">
-        <div className="login-art">
-          <Link className="brand" to="/"><Logo />Collaborate‑Bench</Link>
-          <div>
-            <h2 style={{ fontSize: 34, lineHeight: 1.1, fontWeight: 800, letterSpacing: -1 }}>One desk. Clear roles.<br />AI on every step.</h2>
-            <p style={{ opacity: .8, marginTop: 12, maxWidth: 440 }}>Delivery Managers see the whole organization, Team Leads see their own and their team's data, and Recruiters see their own pipeline. SQL Server enforces it on every query.</p>
-            <div className="hier">
-              <div className="hb">Delivery Manager<small>All teams · full access</small></div>
-              <div className="hrow"><div className="hb">Team Lead · Alpha<small>Own + team data</small></div><div className="hb">Team Lead · Beta<small>Own + team data</small></div></div>
-              <div className="hrow">{[1, 2, 3, 4].map(i => <div key={i} className="hb s">Recruiter</div>)}</div>
-            </div>
+        <aside className="login-art">
+          <Link to="/" className="login-brand" aria-label="Collaborate Bench Sales home"><Brand light height={40} /></Link>
+          <div className="login-pitch">
+            <span className="login-kicker">US IT bench sales, end to end</span>
+            <h2>Place your bench faster,<br />with AI on every step.</h2>
+            <p>Parse resumes, match consultants to open requirements, submit to vendors and follow up, all from one workspace your whole desk shares.</p>
+            <ul className="login-points">
+              {POINTS.map(([icon, title, text]) => (
+                <li key={title}><span className="lp-ico"><Icon d={icon} size={18} /></span><span><b>{title}</b>{text}</span></li>
+              ))}
+            </ul>
           </div>
-          <small style={{ opacity: .6 }}>© {new Date().getFullYear()} Collaborate‑Bench Sales</small>
-        </div>
-        <div className="login-card">
-          {changing ? <ChangePassword voluntary={!!loc.state?.voluntary} onDone={async () => { await refresh(); nav('/dashboard', { replace: true }); }} /> : (
-            <>
-              <h1>Sign in to your workspace</h1>
-              <p className="muted" style={{ margin: '6px 0 20px' }}>{microsoft ? 'Use your company Microsoft account, or any email with a password.' : 'Use your work email and password.'}</p>
-              {loc.state?.reason === 'signin' && !alert && <Alert type="info" title="Please sign in">Sign in to open the workspace.</Alert>}
-              {alert && <Alert type={alert.type} title={alert.title}>{alert.detail}</Alert>}
-              {microsoft && <>
-                <button type="button" className="btn btn-outline ms-btn" onClick={signInWithMicrosoft} disabled={msBusy}>
-                  {msBusy ? <Spinner dark /> : <MicrosoftLogo />} Sign in with Microsoft (Outlook)</button>
-                <p className="muted" style={{ fontSize: 12.5, margin: '6px 0 0', textAlign: 'center' }}>Company accounts. Your emails with vendors are tracked automatically.</p>
-                <div className="or"><span>or sign in with email and password</span></div>
-              </>}
-              <form onSubmit={submit} noValidate>
-                <Field label="Work email" error={errors.email}><input className="inp" type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" autoFocus /></Field>
-                <Field label={<span className="flex between" style={{ width: '100%' }}>Password<a href="#" style={{ fontSize: 12.5, color: 'var(--primary)', fontWeight: 600 }}
-                  onClick={e => { e.preventDefault(); setAlert({ type: 'info', title: 'Forgot your password?', detail: 'Ask your Delivery Manager or admin to reset it from Team & Access. You will get a temporary password.' }); }}>Forgot password?</a></span>} error={errors.password}>
-                  <div className="pw"><input className="inp" type={show ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
-                    <button type="button" onClick={() => setShow(s => !s)}>{show ? 'Hide' : 'Show'}</button></div>
-                </Field>
-                <button className="btn btn-dark" type="submit" disabled={busy} style={{ width: '100%', justifyContent: 'center', padding: 12 }}>{busy ? <Spinner /> : 'Sign in'}</button>
-              </form>
-              {import.meta.env.DEV && (
-                <div className="demo"><b style={{ fontSize: 13 }}>Demo accounts</b> <span className="muted" style={{ fontSize: 12.5 }}>· password <span className="mono">Demo@123</span> · click to fill</span>
-                  <div className="demo-grid">{DEMO.map(([n, em, r]) => (
-                    <button key={em} type="button" className="demo-acc" onClick={() => { setEmail(em); setPassword('Demo@123'); setErrors({}); setAlert(null); }}>
-                      <Avatar name={n} size={26} /><span><b>{n}</b><small>{r}</small></span></button>))}</div>
-                </div>
-              )}
-              <Link to="/" className="muted" style={{ fontSize: 13, marginTop: 18 }}>← Back to website</Link>
-            </>
-          )}
-        </div>
+          <div className="login-foot">
+            <span><Icon d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" size={14} /> Role-based access: recruiters see their own pipeline, leads see their team.</span>
+            <small>© {new Date().getFullYear()} Collaborate · Bench Sales</small>
+          </div>
+        </aside>
+
+        <main className="login-side">
+          <div className="login-card">
+            <Link to="/" className="login-card-logo" aria-label="Collaborate Bench Sales home"><Brand height={44} /></Link>
+            {changing ? <ChangePassword voluntary={!!loc.state?.voluntary} onDone={async () => { await refresh(); nav('/dashboard', { replace: true }); }} /> : (
+              <>
+                <h1>Welcome back</h1>
+                <p className="login-sub">{microsoft ? 'Sign in with your company Microsoft account, or with your email and password.' : 'Sign in with your work email and password.'}</p>
+                {loc.state?.reason === 'signin' && !alert && <Alert type="info" title="Please sign in">Sign in to open the workspace.</Alert>}
+                {alert && <Alert type={alert.type} title={alert.title}>{alert.detail}</Alert>}
+                {microsoft && <>
+                  <button type="button" className="btn btn-outline ms-btn" onClick={signInWithMicrosoft} disabled={msBusy}>
+                    {msBusy ? <Spinner dark /> : <MicrosoftLogo />} Continue with Microsoft</button>
+                  <p className="login-hint">Company accounts. Your emails with vendors are tracked automatically.</p>
+                  <div className="or"><span>or with email</span></div>
+                </>}
+                <form onSubmit={submit} noValidate>
+                  <Field label="Work email" error={errors.email}><input className="inp" type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" autoFocus /></Field>
+                  <Field label={<span className="flex between" style={{ width: '100%' }}>Password<a href="#" className="login-link"
+                    onClick={e => { e.preventDefault(); setAlert({ type: 'info', title: 'Forgot your password?', detail: 'Ask your Delivery Manager or admin to reset it from Team & Access. You will get a temporary password.' }); }}>Forgot password?</a></span>} error={errors.password}>
+                    <div className="pw"><input className="inp" type={show ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" />
+                      <button type="button" onClick={() => setShow(s => !s)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? 'Hide' : 'Show'}</button></div>
+                  </Field>
+                  <button className="btn btn-primary login-submit" type="submit" disabled={busy}>{busy ? <Spinner /> : 'Sign in'}</button>
+                </form>
+                {import.meta.env.DEV && (
+                  <details className="demo">
+                    <summary><b>Demo accounts</b> <span className="muted">· password <span className="mono">Demo@123</span> · click one to fill in</span></summary>
+                    <div className="demo-grid">{DEMO.map(([n, em, r]) => (
+                      <button key={em} type="button" className="demo-acc" onClick={() => { setEmail(em); setPassword('Demo@123'); setErrors({}); setAlert(null); }}>
+                        <Avatar name={n} size={26} /><span><b>{n}</b><small>{r}</small></span></button>))}</div>
+                  </details>
+                )}
+                <Link to="/" className="login-back">← Back to website</Link>
+              </>
+            )}
+          </div>
+        </main>
       </div>
     </div>
   );
 }
+
+/** What the left panel highlights: [icon path, title, one line]. */
+const POINTS: [string, string, string][] = [
+  ['M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6', 'AI resume parsing', 'Turn any resume or LinkedIn profile into a ready bench profile.'],
+  ['M12 2l3 7h7l-5.5 4.5 2 7.5-6.5-4.5L5.5 21l2-7.5L2 9h7z', 'Explainable matching', 'See which consultant fits which requirement, and why.'],
+  ['M4 4h16a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2zM22 6l-10 7L2 6', 'Vendor submissions & follow-ups', 'RTR, submissions and reminders tracked through to billing.'],
+  ['M13 2L3 14h9l-1 8 10-12h-9l1-8z', 'Autopilot', 'Prepares matches and follow-ups for you to approve.'],
+];
 
 const MS_ERRORS: Record<string, { type: 'error' | 'warning' | 'info'; title: string; detail: string }> = {
   not_registered: { type: 'error', title: 'Account not set up', detail: "Your Microsoft account isn't registered in Collaborate-Bench. Ask your admin to add your work email in Team & Access." },

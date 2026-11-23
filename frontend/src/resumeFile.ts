@@ -14,11 +14,23 @@ export async function fileToText(file: File): Promise<string> {
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const tc = await page.getTextContent();
-      let lastY: number | null = null;
-      for (const it of tc.items as { str: string; transform: number[] }[]) {
-        const y = it.transform[5];
-        if (lastY !== null && Math.abs(y - lastY) > 4) out += '\n';
-        out += it.str + ' '; lastY = y;
+      // Rebuild lines from positioned text pieces. A space goes in only where there is a visible gap, so names in
+      // fonts that place letters one by one ("R","A","V","I") come out as "RAVI", not "R A V I". A wide gap on the same
+      // line (name on the left, phone on the right) becomes " | " so the parser can tell the parts apart.
+      let lastY: number | null = null, lastEnd: number | null = null;
+      for (const raw of tc.items as { str?: string; transform?: number[]; width?: number; hasEOL?: boolean }[]) {
+        if (typeof raw.str !== 'string' || !raw.transform) continue;
+        const [a, b, , , x, y] = raw.transform;
+        const size = Math.hypot(a, b) || 10;
+        if (lastY !== null && Math.abs(y - lastY) > 4) { out += '\n'; lastEnd = null; }
+        else if (lastEnd !== null && raw.str && !/^\s/.test(raw.str) && !/\s$/.test(out)) {
+          const gap = x - lastEnd;
+          if (gap > size * 3) out += ' | ';
+          else if (gap > size * 0.15) out += ' ';
+        }
+        out += raw.str;
+        lastY = y; lastEnd = x + (raw.width ?? 0);
+        if (raw.hasEOL) { out += '\n'; lastY = null; lastEnd = null; }
       }
       out += '\n';
     }

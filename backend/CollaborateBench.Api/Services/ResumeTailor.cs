@@ -63,6 +63,7 @@ public sealed partial class ResumeTailor(ClaudeClient claude, ILogger<ResumeTail
         doc.Phone = hideContact ? null : NullIfEmpty(consultant.Phone);
         doc.Location = NullIfEmpty(consultant.Location) ?? NullIfEmpty(doc.Location);
 
+        Clean(doc);
         var warnings = Verify(doc, source, consultant, strip: true);
         return new Result(doc, changes, gaps, matched, warnings, engine, notice);
     }
@@ -128,19 +129,129 @@ public sealed partial class ResumeTailor(ClaudeClient claude, ILogger<ResumeTail
     {
         var all = Rules.FindSkills(source).Concat(c.Skills).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var others = all.Where(s => !matched.Contains(s, StringComparer.OrdinalIgnoreCase)).ToList();
+        var sections = SplitSections(source);
+
+        // Summary: one lead sentence built from profile facts, then the original summary in its own words (whole sentences only).
+        var who = string.IsNullOrWhiteSpace(c.Title) ? "IT professional" : c.Title.Trim();
         var years = c.Exp > 0 ? $" with {c.Exp}+ years of experience" : "";
         var lead = matched.Count > 0 ? $"{(years.Length > 0 ? ", including" : " with")} hands-on work in {string.Join(", ", matched.Take(6))}" : "";
+        var original = WholeSentences(Flatten(sections.GetValueOrDefault("summary")) ?? c.Summary, 900);
+        var summary = $"{char.ToUpperInvariant(who[0])}{who[1..]}{years}{lead}.";
+        if (original.Length > 0) summary += " " + original;
+
+        // Experience: only the experience (and projects) part of the original, tidied. Falls back to everything that
+        // isn't a recognised section, so nothing from the original is lost.
+        var experience = sections.GetValueOrDefault("experience");
+        if (sections.GetValueOrDefault("projects") is { } projects) experience = $"{experience}\n\nPROJECTS\n{projects}";
+        experience = WithoutContactLines(experience ?? sections.GetValueOrDefault("other"), c.Name);
+
         var doc = new ResumeDoc
         {
             Headline = c.Title,
-            Summary = $"{c.Title}{years}{lead}. {c.Summary}".Trim(),
+            Summary = summary.Trim(),
             Skills = [.. new[] { new SkillGroup { Category = "Relevant to this role", Items = matched }, new SkillGroup { Category = "Other skills", Items = others } }
                 .Where(g => g.Items.Count > 0)],
-            AdditionalText = source.Trim(),
+            AdditionalText = TidyText(experience),
+            Education = ParseEducation(sections.GetValueOrDefault("education")),
+            Certifications = (TidyText(sections.GetValueOrDefault("certifications")) ?? "").Split('\n')
+                .Select(l => l.Trim().TrimStart('•', '-', '*', '·', '▪', ' ')).Where(l => l.Length is > 2 and <= 200).Take(12).ToList(),
         };
-        var changes = new List<string> { "Summary rewritten to lead with the skills this job asks for", "Skills regrouped: job-relevant skills first", "Experience kept exactly as in the original" };
+        var changes = new List<string> { "Summary rewritten to lead with the skills this job asks for", "Skills regrouped: job-relevant skills first",
+            "Experience kept exactly as in the original (blank lines tidied)" };
+        if (doc.Education.Count > 0 || doc.Certifications.Count > 0) changes.Add("Education and certifications taken from the original into their own sections");
         var notice = (claudeNotice ?? "The built-in engine was used.") + " It tailors the summary and skills only. Add an Anthropic API key for full tailoring of the experience section.";
         return (doc, changes, "rules", notice);
+    }
+
+    // ---------- Reading the original's sections (built-in engine) ----------
+
+    private static readonly (string Key, Regex Heading)[] SectionHeadings =
+    [
+        ("summary", new(@"^(professional|career|executive|personal)?\s*(summary|profile|objective|overview)|^about me$", RegexOptions.IgnoreCase)),
+        ("skills", new(@"^(technical|key|core|professional)?\s*(skills?|competencies|expertise|skill set|technologies|tools)(\s+(summary|&\s*tools))?$", RegexOptions.IgnoreCase)),
+        ("experience", new(@"^(professional|work|relevant|employment|career)?\s*(experience|history|employment)(\s+(summary|history|details))?$|^work history$", RegexOptions.IgnoreCase)),
+        ("projects", new(@"^(key\s+|major\s+|academic\s+)?projects?$", RegexOptions.IgnoreCase)),
+        ("education", new(@"^(education|academic\s+(qualifications?|background|details)|educational\s+qualifications?|qualifications)$", RegexOptions.IgnoreCase)),
+        ("certifications", new(@"^(certifications?|certificates|licenses?\s*(&|and)\s*certifications?|certifications?\s*(&|and)\s*(training|courses))$", RegexOptions.IgnoreCase)),
+    ];
+
+    /// <summary>Splits resume text at its section headings ("EXPERIENCE", "Technical Skills:", ...). Text before the first
+    /// heading (name and contacts) is dropped; text under an unknown heading, or with no headings at all, goes to "other".</summary>
+    public static Dictionary<string, string> SplitSections(string source)
+    {
+        var result = new Dictionary<string, System.Text.StringBuilder>();
+        string? current = null;
+        var sawHeading = false;
+        foreach (var raw in source.Replace("\r", "").Split('\n'))
+        {
+            var line = raw.Trim();
+            var bare = line.TrimEnd(':').Trim();
+            var key = bare.Length is > 2 and <= 45 ? SectionHeadings.FirstOrDefault(h => h.Heading.IsMatch(bare)).Key : null;
+            if (key != null) { current = key; sawHeading = true; continue; }
+            if (!sawHeading) { (result.TryGetValue("other", out var o) ? o : result["other"] = new()).AppendLine(line); continue; }
+            var target = current ?? "other";
+            (result.TryGetValue(target, out var sb) ? sb : result[target] = new()).AppendLine(line);
+        }
+        var map = result.ToDictionary(k => k.Key, v => v.Value.ToString().Trim());
+        if (sawHeading) map.Remove("other");   // the header block (name, contacts) when the resume has real sections
+        return map.Where(kv => kv.Value.Length > 0).ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    /// <summary>Drops lines from the original text that carry contact details (email, phone, LinkedIn) or are just the
+    /// candidate's name, e.g. a resume footer. Contact details only come from the profile, and only when not hidden.</summary>
+    private static string? WithoutContactLines(string? text, string name)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text;
+        var keep = text.Replace("\r", "").Split('\n').Where(l =>
+        {
+            var t = l.Trim();
+            if (t.Length == 0) return true;
+            if (Regex.IsMatch(t, @"[\w.+-]+@[\w-]+\.[\w.]+")) return false;                                                   // email
+            if (t.Length < 80 && Regex.IsMatch(t, @"(\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}")) return false;   // phone
+            if (t.Length < 120 && Regex.IsMatch(t, @"linkedin\.com/", RegexOptions.IgnoreCase)) return false;
+            if (name.Length > 0 && (t.Equals(name, StringComparison.OrdinalIgnoreCase)
+                                    || (t.Length < name.Length + 20 && t.EndsWith(" " + name, StringComparison.OrdinalIgnoreCase)))) return false;
+            return true;
+        });
+        return string.Join('\n', keep);
+    }
+
+    private static string? Flatten(string? s) => string.IsNullOrWhiteSpace(s) ? null : Regex.Replace(s, @"\s+", " ").Trim();
+
+    /// <summary>Cuts text to whole sentences within <paramref name="max"/> characters, so a summary never ends mid-word.</summary>
+    private static string WholeSentences(string? s, int max)
+    {
+        s = Flatten(s) ?? "";
+        if (s.Length == 0) return "";
+        var sentences = Regex.Split(s, @"(?<=[.!?])\s+").Where(x => x.Length > 0).ToList();
+        var complete = sentences.Where(x => Regex.IsMatch(x, @"[.!?]$")).ToList();
+        var outText = "";
+        foreach (var sent in complete) { if ((outText + " " + sent).Length > max) break; outText = (outText + " " + sent).Trim(); }
+        return outText;
+    }
+
+    /// <summary>Education lines as entries: a line with a degree starts an entry; the next line without one is its school.
+    /// The year is the last 4-digit year on either line.</summary>
+    private static List<ResumeEducation> ParseEducation(string? text)
+    {
+        var lines = (TidyText(text) ?? "").Split('\n').Select(l => l.Trim().TrimStart('•', '-', '*', '·', '▪', ' ').Trim()).Where(l => l.Length > 1).ToList();
+        var list = new List<ResumeEducation>();
+        for (var i = 0; i < lines.Count && list.Count < 6; i++)
+        {
+            var line = lines[i].TrimEnd(':');
+            if (!Rules.IsDegree(line) && list.Count > 0 && list[^1].School is null) { list[^1].School = line; continue; }
+            var e = new ResumeEducation { Degree = line };
+            if (i + 1 < lines.Count && !Rules.IsDegree(lines[i + 1])) { e.School = lines[i + 1].TrimEnd(':'); i++; }
+            var year = Regex.Matches($"{e.Degree} {e.School}", @"\b(19|20)\d{2}\b").LastOrDefault()?.Value;
+            if (year != null)
+            {
+                e.Year = year;
+                e.Degree = Regex.Replace(e.Degree, @"[\s,–\-]*\b" + year + @"\b\s*$", "").Trim();
+                if (e.School != null) e.School = Regex.Replace(e.School, @"[\s,–\-]*\b" + year + @"\b\s*$", "").Trim();
+            }
+            if (e.Degree.Length > 0) list.Add(e);
+        }
+        return list;
     }
 
     // ---------- Verification against the original ----------
@@ -215,6 +326,28 @@ public sealed partial class ResumeTailor(ClaudeClient claude, ILogger<ResumeTail
         d.Experience.RemoveAll(j => j.Company.Trim().Length == 0 && j.Title.Trim().Length == 0 && j.Bullets.Count == 0);
         d.Education.RemoveAll(e => string.IsNullOrWhiteSpace(e.Degree) && string.IsNullOrWhiteSpace(e.School));
         d.Certifications = d.Certifications.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct().ToList();
+        // Design settings come from the browser: keep them to known values.
+        d.Template = ResumeDoc.Templates.Contains(d.Template?.ToLowerInvariant()) ? d.Template!.ToLowerInvariant() : "classic";
+        var accent = (d.Accent ?? "").TrimStart('#');
+        d.Accent = Regex.IsMatch(accent, "^[0-9A-Fa-f]{6}$") ? accent.ToUpperInvariant() : "1E293B";
+        d.HiddenSections = (d.HiddenSections ?? []).Select(s => s.ToLowerInvariant()).Where(ResumeDoc.Sections.Contains).Distinct().ToList();
+        if (d.AdditionalText != null) d.AdditionalText = TidyText(d.AdditionalText);
+    }
+
+    /// <summary>Trims lines and collapses runs of blank lines (Word files turn every paragraph gap into empty lines).</summary>
+    public static string? TidyText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var lines = text.Replace("\r", "").Split('\n').Select(l => Regex.Replace(l, @"[ \t]+", " ").Trim()).ToList();
+        var sb = new System.Text.StringBuilder();
+        var blank = false;
+        foreach (var l in lines)
+        {
+            if (l.Length == 0) { blank = sb.Length > 0; continue; }
+            if (blank) { sb.Append('\n'); blank = false; }
+            sb.Append(l).Append('\n');
+        }
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>The facts we accept, indexed once: the resume text, the profile skills and the years of experience on file.</summary>

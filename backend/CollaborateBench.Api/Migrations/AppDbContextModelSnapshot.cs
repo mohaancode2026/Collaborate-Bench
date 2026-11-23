@@ -312,6 +312,140 @@ namespace CollaborateBench.Api.Migrations
                     b.ToTable("AutopilotSettings", "bench");
                 });
 
+            modelBuilder.Entity("CollaborateBench.Api.Data.CandidateActivity", b =>
+                {
+                    b.Property<int>("ActivityId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ActivityId"));
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<int>("ConsultantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(30)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(30)");
+
+                    b.Property<int?>("RequirementId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("ActivityId");
+
+                    b.HasIndex("RequirementId");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("ConsultantId", "CreatedUtc");
+
+                    b.ToTable("CandidateActivities", "bench");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.CandidateLead", b =>
+                {
+                    b.Property<int>("LeadId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("LeadId"));
+
+                    b.Property<int>("ConsultantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("RequirementId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(12)");
+
+                    b.Property<int>("UpdatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("LeadId");
+
+                    b.HasIndex("RequirementId");
+
+                    b.HasIndex("UpdatedByUserId");
+
+                    b.HasIndex("ConsultantId", "RequirementId")
+                        .IsUnique()
+                        .HasDatabaseName("UQ_Lead_ConsReq");
+
+                    b.ToTable("CandidateLeads", "bench");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.CandidateReminder", b =>
+                {
+                    b.Property<int>("ReminderId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ReminderId"));
+
+                    b.Property<DateTime?>("ClosedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("ConsultantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("DueUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(12)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("ReminderId");
+
+                    b.HasIndex("ConsultantId");
+
+                    b.HasIndex("UserId", "Status", "DueUtc");
+
+                    b.ToTable("CandidateReminders", "bench");
+                });
+
             modelBuilder.Entity("CollaborateBench.Api.Data.Consultant", b =>
                 {
                     b.Property<int>("ConsultantId")
@@ -320,8 +454,20 @@ namespace CollaborateBench.Api.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ConsultantId"));
 
+                    b.Property<string>("Availability")
+                        .HasMaxLength(60)
+                        .HasColumnType("nvarchar(60)");
+
+                    b.Property<string>("Certifications")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("Education")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
 
                     b.Property<string>("Email")
                         .HasColumnType("nvarchar(max)");
@@ -336,6 +482,10 @@ namespace CollaborateBench.Api.Migrations
                     b.Property<string>("HotlistSummary")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("LinkedInUrl")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
                     b.Property<string>("Location")
                         .HasColumnType("nvarchar(max)");
 
@@ -345,12 +495,26 @@ namespace CollaborateBench.Api.Migrations
                     b.Property<int>("OwnerUserId")
                         .HasColumnType("int");
 
+                    b.Property<string>("PassportLast4")
+                        .HasMaxLength(4)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(4)");
+
+                    b.Property<string>("PassportProtected")
+                        .HasMaxLength(600)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(600)");
+
                     b.Property<decimal>("PayRate")
                         .HasPrecision(7, 2)
                         .HasColumnType("decimal(7,2)");
 
                     b.Property<string>("Phone")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PreferredLocations")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<byte[]>("RowVer")
                         .IsConcurrencyToken()
@@ -362,6 +526,14 @@ namespace CollaborateBench.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)")
+                        .HasDefaultValue("Manual");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -372,10 +544,21 @@ namespace CollaborateBench.Api.Migrations
                     b.Property<DateTime>("UpdatedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<byte?>("UsExperienceYears")
+                        .HasColumnType("tinyint");
+
                     b.Property<string>("VisaStatus")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<DateTime?>("VisaValidUntil")
+                        .HasColumnType("date");
+
                     b.HasKey("ConsultantId");
+
+                    b.HasIndex("LinkedInUrl")
+                        .IsUnique()
+                        .HasDatabaseName("UQ_Consultants_LinkedInUrl")
+                        .HasFilter("[LinkedInUrl] IS NOT NULL");
 
                     b.HasIndex("OwnerUserId");
 
@@ -844,6 +1027,10 @@ namespace CollaborateBench.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("SourceUrl")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -867,6 +1054,11 @@ namespace CollaborateBench.Api.Migrations
                     b.HasKey("RequirementId");
 
                     b.HasIndex("PostedByUserId");
+
+                    b.HasIndex("SourceUrl")
+                        .IsUnique()
+                        .HasDatabaseName("UQ_Requirements_SourceUrl")
+                        .HasFilter("[SourceUrl] IS NOT NULL");
 
                     b.ToTable("Requirements", "bench");
                 });
@@ -1420,6 +1612,78 @@ namespace CollaborateBench.Api.Migrations
                     b.HasOne("CollaborateBench.Api.Data.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.CandidateActivity", b =>
+                {
+                    b.HasOne("CollaborateBench.Api.Data.Consultant", "Consultant")
+                        .WithMany()
+                        .HasForeignKey("ConsultantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CollaborateBench.Api.Data.Requirement", "Requirement")
+                        .WithMany()
+                        .HasForeignKey("RequirementId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("CollaborateBench.Api.Data.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Consultant");
+
+                    b.Navigation("Requirement");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.CandidateLead", b =>
+                {
+                    b.HasOne("CollaborateBench.Api.Data.Consultant", "Consultant")
+                        .WithMany()
+                        .HasForeignKey("ConsultantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CollaborateBench.Api.Data.Requirement", "Requirement")
+                        .WithMany()
+                        .HasForeignKey("RequirementId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("CollaborateBench.Api.Data.User", "UpdatedBy")
+                        .WithMany()
+                        .HasForeignKey("UpdatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Consultant");
+
+                    b.Navigation("Requirement");
+
+                    b.Navigation("UpdatedBy");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.CandidateReminder", b =>
+                {
+                    b.HasOne("CollaborateBench.Api.Data.Consultant", "Consultant")
+                        .WithMany()
+                        .HasForeignKey("ConsultantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CollaborateBench.Api.Data.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Consultant");
 
                     b.Navigation("User");
                 });

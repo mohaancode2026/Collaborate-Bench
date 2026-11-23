@@ -4,14 +4,33 @@ import { useAuth } from './auth';
 import { Alert, Avatar, Field, FieldErrors, Modal, Spinner, useErrorHandler, useToast } from './ui';
 
 export interface ConsultantDraft {
+  id?: number;
   name: string; title: string; email: string; phone: string; visa: string; location: string; relocate: boolean;
   rate: number | ''; exp: number | ''; status: string; skills: string; summary: string; ownerId?: number; rowVersion?: string;
+  // details vendors ask for on a submission
+  linkedInUrl: string; visaValidUntil: string; availability: string; preferredLocations: string; usExp: number | '';
+  education: string; certifications: string;
+  /** A new passport number typed in the form ('' keeps the one on file). */
+  passportNumber: string;
+  /** Masked number already on file, e.g. ••••1234 (display only). */
+  passportOnFile?: string | null;
+  clearPassport?: boolean;
 }
-export const emptyDraft = (): ConsultantDraft => ({ name: '', title: '', email: '', phone: '', visa: '', location: '', relocate: false, rate: '', exp: '', status: 'Bench', skills: '', summary: '' });
-export const toDraft = (c: Consultant): ConsultantDraft => ({ ...c, skills: c.skills.join(', '), ownerId: c.ownerId, rowVersion: c.rowVersion });
+const noDetails = { linkedInUrl: '', visaValidUntil: '', availability: '', preferredLocations: '', usExp: '' as const, education: '', certifications: '', passportNumber: '' };
+export const emptyDraft = (): ConsultantDraft => ({ name: '', title: '', email: '', phone: '', visa: '', location: '', relocate: false, rate: '', exp: '', status: 'Bench', skills: '', summary: '', ...noDetails });
+export const toDraft = (c: Consultant): ConsultantDraft => ({
+  ...c, ...noDetails, skills: c.skills.join(', '), ownerId: c.ownerId, rowVersion: c.rowVersion,
+  linkedInUrl: c.linkedInUrl ?? '', visaValidUntil: c.visaValidUntil ? c.visaValidUntil.slice(0, 10) : '', availability: c.availability ?? '',
+  preferredLocations: c.preferredLocations ?? '', usExp: c.usExp ?? '', education: c.education ?? '', certifications: c.certifications ?? '',
+  passportOnFile: c.passportOnFile ?? null,
+});
 export const toInput = (d: ConsultantDraft) => ({
   ...d, rate: Number(d.rate) || 0, exp: Number(d.exp) || 0, skills: d.skills.split(',').map(s => s.trim()).filter(Boolean),
+  usExp: d.usExp === '' ? null : Number(d.usExp), visaValidUntil: d.visaValidUntil || null,
+  passportNumber: d.passportNumber.trim() || null, clearPassport: !!d.clearPassport, passportOnFile: undefined, id: undefined,
 });
+
+const AVAILABILITY = ['Immediately', '1 week notice', '2 weeks notice', '30 days notice', 'On project, ending soon'];
 
 /** Consultant fields with inline validation messages coming from the API. */
 export function ConsultantForm({ draft, set, errors }: { draft: ConsultantDraft; set: (d: ConsultantDraft) => void; errors: FieldErrors }) {
@@ -20,6 +39,14 @@ export function ConsultantForm({ draft, set, errors }: { draft: ConsultantDraft;
   const canReassign = can('bench.reassign');
   useEffect(() => { if (canReassign) api<TeamMember[]>('/users').then(u => setOwners(u.filter(x => x.active && x.role !== 'Admin'))).catch(() => {}); }, [canReassign]);
   const f = <K extends keyof ConsultantDraft>(k: K) => (v: ConsultantDraft[K]) => set({ ...draft, [k]: v });
+  const notify = useToast();
+  const onError = useErrorHandler();
+  const [revealed, setRevealed] = useState<string | null>(null);
+  const reveal = async () => {
+    if (!draft.id) return;
+    try { setRevealed((await api<{ passportNumber: string }>(`/consultants/${draft.id}/passport`)).passportNumber); notify('info', 'Passport number shown', 'This view is recorded in the activity log.'); }
+    catch (e) { onError(e); }
+  };
   return (
     <>
       <div className="row2">
@@ -46,6 +73,33 @@ export function ConsultantForm({ draft, set, errors }: { draft: ConsultantDraft;
       </div>
       <Field label="Skills * (comma separated)" error={errors.skills}><input className="inp" value={draft.skills} onChange={e => f('skills')(e.target.value)} /></Field>
       <Field label="Hotlist summary" error={errors.summary}><textarea className="inp" style={{ minHeight: 70 }} value={draft.summary} onChange={e => f('summary')(e.target.value)} /></Field>
+      <div className="form-sec">Vendor submission details</div>
+      <div className="row2">
+        <Field label="LinkedIn profile" error={errors.linkedInUrl}><input className="inp" value={draft.linkedInUrl} placeholder="https://www.linkedin.com/in/name" onChange={e => f('linkedInUrl')(e.target.value)} /></Field>
+        <Field label={<span className="flex between" style={{ width: '100%' }}>Passport number
+          {draft.passportOnFile && !draft.clearPassport && <span className="muted" style={{ fontWeight: 500 }}>On file: {revealed ?? draft.passportOnFile}{' '}
+            {draft.id && can('bench.edit') && !revealed && <a href="#" className="lnk" onClick={e => { e.preventDefault(); reveal(); }}>Show</a>}{' '}
+            <a href="#" className="lnk" onClick={e => { e.preventDefault(); set({ ...draft, clearPassport: true, passportNumber: '' }); }}>Remove</a></span>}
+          {draft.clearPassport && <span className="muted" style={{ fontWeight: 500 }}>Will be removed · <a href="#" className="lnk" onClick={e => { e.preventDefault(); set({ ...draft, clearPassport: false }); }}>Undo</a></span>}</span>}
+          error={errors.passportNumber}>
+          <input className="inp" value={draft.passportNumber} autoComplete="off" spellCheck={false}
+            placeholder={draft.passportOnFile && !draft.clearPassport ? 'Type to replace the number on file' : 'e.g. Z1234567'}
+            onChange={e => set({ ...draft, passportNumber: e.target.value.toUpperCase(), clearPassport: false })} />
+        </Field>
+      </div>
+      <div className="row3">
+        <Field label="Visa valid until" error={errors.visaValidUntil}><input className="inp" type="date" value={draft.visaValidUntil} onChange={e => f('visaValidUntil')(e.target.value)} /></Field>
+        <Field label="Availability" error={errors.availability}>
+          <input className="inp" list="cb-availability" value={draft.availability} placeholder="Immediately" onChange={e => f('availability')(e.target.value)} />
+          <datalist id="cb-availability">{AVAILABILITY.map(a => <option key={a} value={a} />)}</datalist>
+        </Field>
+        <Field label="US experience (yrs)" error={errors.usExp}><input className="inp" type="number" min={0} value={draft.usExp} onChange={e => f('usExp')(e.target.value === '' ? '' : Number(e.target.value))} /></Field>
+      </div>
+      <div className="row2">
+        <Field label="Preferred locations" error={errors.preferredLocations}><input className="inp" value={draft.preferredLocations} placeholder="e.g. Dallas, TX; Remote; anywhere in the US" onChange={e => f('preferredLocations')(e.target.value)} /></Field>
+        <Field label="Highest education" error={errors.education}><input className="inp" value={draft.education} placeholder="e.g. MS Computer Science, UNT, 2014" onChange={e => f('education')(e.target.value)} /></Field>
+      </div>
+      <Field label="Certifications" error={errors.certifications}><input className="inp" value={draft.certifications} placeholder="e.g. AWS Solutions Architect – Associate; CKA" onChange={e => f('certifications')(e.target.value)} /></Field>
       <div className="row2">
         <Field label="Status" error={errors.status}><select className="inp" value={draft.status} onChange={e => f('status')(e.target.value)}>{['Bench', 'Marketing', 'Placed'].map(s => <option key={s}>{s}</option>)}</select></Field>
         <label className="chip" style={{ alignSelf: 'end', marginBottom: 14 }}><input type="checkbox" checked={draft.relocate} onChange={e => f('relocate')(e.target.checked)} /> Open to relocate</label>

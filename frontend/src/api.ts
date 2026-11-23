@@ -132,6 +132,10 @@ export interface Consultant {
   id: number; name: string; title: string; email: string; phone: string; visa: string; location: string; relocate: boolean;
   rate: number; exp: number; status: string; skills: string[]; summary: string; ownerId: number; ownerName: string;
   ownerTeam?: string; daysOnBench: number; activeSubmissions: number; rowVersion: string;
+  linkedInUrl?: string | null; source?: string;
+  /** Masked (••••1234) when a passport number is on file. */
+  passportOnFile?: string | null; visaValidUntil?: string | null; availability?: string | null; preferredLocations?: string | null;
+  education?: string | null; certifications?: string | null; usExp?: number | null;
 }
 export interface Requirement {
   id: number; title: string; client: string; vendor: string; tier: string; location: string; mode: string; type: string;
@@ -201,6 +205,8 @@ export interface ResumeDoc {
   experience: { company: string; title: string; location?: string | null; start?: string | null; end?: string | null; bullets: string[]; environment?: string | null }[];
   education: { degree: string; school?: string | null; year?: string | null }[];
   certifications: string[]; additionalText?: string | null;
+  /** Design: classic | modern | compact, accent colour (6 hex digits), sections left out. */
+  template?: string; accent?: string; hiddenSections?: string[];
 }
 export interface ResumeSource { resumeId: number; fileName?: string | null; text: string; uploadedUtc: string; uploadedBy?: string | null; }
 export interface TailoredResume {

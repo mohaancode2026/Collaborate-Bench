@@ -7,8 +7,16 @@ import { useAutopilotCount } from './autopilotCount';
 import { useAuth } from './auth';
 import { Avatar, useErrorHandler, useToast } from './ui';
 
-export const Logo = () => (
-  <div className="logo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0f172a" strokeWidth="2.4" strokeLinecap="round"><circle cx="8" cy="8" r="3" /><circle cx="16" cy="16" r="3" /><path d="M10.5 10.5l3 3M16 8h3M5 16h3" /></svg></div>
+/** The Collaborate swirl on its own (small spaces, e.g. the RTR page). */
+export const Logo = ({ size = 32 }: { size?: number }) => (
+  <img className="logo-mark" src="/brand/collaborate-mark.png" width={size} height={size} alt="" />
+);
+/** The Collaborate wordmark with a "Bench Sales" tag. <paramref name="light"/>: white lettering for dark backgrounds. */
+export const Brand = ({ light, sub = true, height = 34 }: { light?: boolean; sub?: boolean; height?: number }) => (
+  <span className={`brand-logo${light ? ' on-dark' : ''}`}>
+    <img src={light ? '/brand/collaborate-logo-white.png' : '/brand/collaborate-logo.png'} alt="Collaborate" style={{ height }} />
+    {sub && <span className="brand-sub">Bench Sales</span>}
+  </span>
 );
 export const Icon = ({ d, size = 18 }: { d: string; size?: number }) => (
   <svg width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d={d} /></svg>
@@ -35,7 +43,7 @@ export default function Layout() {
     <div id="app">
       <div className={`scrim${side ? ' open' : ''}`} onClick={() => setSide(false)} />
       <aside className={`side${side ? ' open' : ''}`}>
-        <Link className="brand" to="/"><Logo />Collaborate‑Bench</Link>
+        <Link className="brand" to="/" aria-label="Collaborate Bench Sales home"><Brand light height={30} /></Link>
         <nav className="nav">
           {groups.map(g => {
             const items = NAV.filter(n => n.group === g && can(n.perm));

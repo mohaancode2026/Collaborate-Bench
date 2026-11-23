@@ -1,13 +1,14 @@
 import { DragEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, Consultant, Match } from '../api';
-import { ConsultantDraft, ConsultantForm, toInput } from '../components';
+import { ConsultantDraft, ConsultantForm, emptyDraft, toInput } from '../components';
 import { AiBadge, Alert, Empty, Field, FieldErrors, Spinner, scoreClass, useErrorHandler, useToast } from '../ui';
 import { fileToText } from '../resumeFile';
 
 interface Parsed {
   name: string; title: string; email: string; phone: string; location: string; visa: string; exp: number; rate?: number | null;
   skills: string[]; summary: string; relocate: boolean; source: string; notice?: string; duplicateWarning?: string; topMatches: Match[];
+  linkedInUrl: string; passport: string; education: string; certifications: string; availability: string;
 }
 
 export default function Parser() {
@@ -35,8 +36,10 @@ export default function Parser() {
     try {
       const p = await api<Parsed>('/ai/parse-resume', { method: 'POST', body: { text, fileName } });
       setParsed(p);
-      setDraft({ name: p.name, title: p.title, email: p.email, phone: p.phone, visa: p.visa, location: p.location, relocate: p.relocate,
-        rate: p.rate ?? '', exp: p.exp || '', status: 'Bench', skills: p.skills.join(', '), summary: p.summary });
+      setDraft({ ...emptyDraft(), name: p.name, title: p.title, email: p.email, phone: p.phone, visa: p.visa, location: p.location, relocate: p.relocate,
+        rate: p.rate ?? '', exp: p.exp || '', status: 'Bench', skills: p.skills.join(', '), summary: p.summary,
+        linkedInUrl: p.linkedInUrl ?? '', passportNumber: p.passport ?? '', education: p.education ?? '', certifications: p.certifications ?? '',
+        availability: p.availability ?? '' });
       if (p.notice) notify('info', 'Built-in engine used', p.notice);
     } catch (e) { onError(e, setErrors); }
     finally { setBusy(false); }

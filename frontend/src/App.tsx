@@ -16,6 +16,7 @@ import RtrApprove from './pages/RtrApprove';
 import VendorMail from './pages/VendorMail';
 import MatchPage from './pages/Match';
 import Pipeline from './pages/Pipeline';
+import LinkedInLeads from './pages/LinkedInLeads';
 import Onboarding from './pages/Onboarding';
 import Rates from './pages/Rates';
 import Team from './pages/Team';
@@ -70,7 +71,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }
 
 const PAGES: Record<string, () => JSX.Element> = {
   '/dashboard': Dashboard, '/bench': Bench, '/parser': Parser, '/resume-builder': ResumeBuilder, '/jobs': Jobs, '/board': Board, '/external-jobs': ExternalJobs, '/autopilot': Autopilot, '/vendor-mail': VendorMail, '/match': MatchPage,
-  '/pipeline': Pipeline, '/onboarding': Onboarding, '/rates': Rates, '/team': Team,
+  '/linkedin': LinkedInLeads, '/pipeline': Pipeline, '/onboarding': Onboarding, '/rates': Rates, '/team': Team,
 };
 
 export default function App() {

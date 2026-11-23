@@ -53,7 +53,9 @@ public static class Matching
         var rate = pay <= 0 || j.Rate <= 0 ? 0.7 : pay <= target ? 1 : Math.Max(0, 1 - (pay - target) / target * 2.5);
 
         var visas = j.Visas.Count == 0 ? new List<string> { "Any" } : j.Visas;
-        var visaOk = visas.Contains("Any", StringComparer.OrdinalIgnoreCase) || visas.Contains(c.Visa, StringComparer.OrdinalIgnoreCase)
+        // A sourced lead's visa often isn't known yet: don't penalise it, but say so in the explanation.
+        var visaUnknown = string.IsNullOrEmpty(c.Visa);
+        var visaOk = visaUnknown || visas.Contains("Any", StringComparer.OrdinalIgnoreCase) || visas.Contains(c.Visa, StringComparer.OrdinalIgnoreCase)
                      || (c.Visa is "USC" or "GC" && visas.Any(v => v is "USC" or "GC"));
 
         var loc = j.Mode == "Remote" || j.Location == "Remote" ? 1
@@ -64,7 +66,7 @@ public static class Matching
         var why = new List<string> { hit.Count > 0 ? $"Matches {hit.Count}/{j.Skills.Count} skills ({string.Join(", ", hit)})" : "No direct skill overlap" };
         if (miss.Count > 0) why.Add("gaps: " + string.Join(", ", miss));
         why.Add(j.Rate <= 0 ? "bill rate not posted" : pay <= 0 ? "rate not set" : pay <= target ? $"rate ${c.Rate:0}/hr fits the ${j.Rate:0}/hr bill" : $"rate ${c.Rate:0}/hr is tight against ${j.Rate:0}/hr bill");
-        why.Add(visaOk ? $"{(string.IsNullOrEmpty(c.Visa) ? "visa" : c.Visa)} accepted" : $"{c.Visa} not in client visa list");
+        why.Add(visaUnknown ? "visa not known yet, confirm with the candidate" : visaOk ? $"{c.Visa} accepted" : $"{c.Visa} not in client visa list");
         if (loc < 1) why.Add(c.Relocate ? "open to relocate" : "location mismatch");
 
         return new MatchResult(c.Id, c.Name, c.Title, c.Visa, c.Rate, c.OwnerName, j.Id, j.Title, j.Client, j.Vendor, j.Type, j.Rate,

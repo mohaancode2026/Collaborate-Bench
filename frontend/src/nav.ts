@@ -2,6 +2,7 @@ export const NAV: { path: string; label: string; perm: string; group: string; ic
   { path: '/dashboard', label: 'Dashboard', perm: 'dash.view', group: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
   { path: '/autopilot', label: 'Autopilot', perm: 'pipeline.view', group: 'Overview', icon: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z' },
   { path: '/bench', label: 'Bench & Hotlist', perm: 'bench.view', group: 'Bench', icon: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8z' },
+  { path: '/linkedin', label: 'LinkedIn Leads', perm: 'bench.view', group: 'Bench', icon: 'M16 8a6 6 0 016 6v7h-4v-7a2 2 0 00-4 0v7h-4v-7a6 6 0 016-6zM2 9h4v12H2zM4 6a2 2 0 100-4 2 2 0 000 4z' },
   { path: '/parser', label: 'AI Resume Parser', perm: 'parser.use', group: 'Bench', icon: 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6' },
   { path: '/resume-builder', label: 'AI Resume Builder', perm: 'parser.use', group: 'Bench', icon: 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M9 15l2 2 4-4' },
   { path: '/jobs', label: 'Jobs & Posting Agent', perm: 'jobs.view', group: 'Requirements', icon: 'M2 7h20v14H2zM16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2' },

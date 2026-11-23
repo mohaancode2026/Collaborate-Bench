@@ -74,6 +74,23 @@ public class Consultant
     public string Status { get; set; } = "Bench";
     public List<string> Skills { get; set; } = new();
     public string? HotlistSummary { get; set; }
+    /// <summary>Normalized public profile URL (https://www.linkedin.com/in/slug), unique when set.</summary>
+    public string? LinkedInUrl { get; set; }
+    /// <summary>Where the record came from: Manual | LinkedIn.</summary>
+    public string Source { get; set; } = "Manual";
+    // ----- details vendors ask for on a submission -----
+    /// <summary>Passport number, encrypted with ASP.NET Data Protection (never stored in clear text).</summary>
+    public string? PassportProtected { get; set; }
+    /// <summary>Last 4 characters of the passport number, for the masked display (••••1234).</summary>
+    public string? PassportLast4 { get; set; }
+    public DateTime? VisaValidUntil { get; set; }
+    /// <summary>e.g. "Immediately", "2 weeks notice", "From Jan 5".</summary>
+    public string? Availability { get; set; }
+    public string? PreferredLocations { get; set; }
+    /// <summary>Highest degree, school and year, e.g. "MS Computer Science, UNT, 2014".</summary>
+    public string? Education { get; set; }
+    public string? Certifications { get; set; }
+    public byte? UsExperienceYears { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public byte[] RowVer { get; set; } = Array.Empty<byte>();
@@ -106,6 +123,8 @@ public class Requirement
     public List<string> AcceptedVisas { get; set; } = new() { "Any" };
     public string? Description { get; set; }
     public string Source { get; set; } = "Manual";
+    /// <summary>Page the requirement was captured from (e.g. https://www.linkedin.com/jobs/view/123/), unique when set.</summary>
+    public string? SourceUrl { get; set; }
     public string Status { get; set; } = "Open";
     public int PostedByUserId { get; set; }
     public User PostedBy { get; set; } = null!;
@@ -477,4 +496,53 @@ public class NotificationPrefs
     public bool RtrUpdates { get; set; } = true;
     public bool Problems { get; set; } = true;
     public bool FollowUps { get; set; }
+}
+
+/// <summary>A candidate (usually captured from LinkedIn) shortlisted or rejected for one requirement, before any submission.</summary>
+public class CandidateLead
+{
+    public int LeadId { get; set; }
+    public int ConsultantId { get; set; }
+    public Consultant Consultant { get; set; } = null!;
+    public int RequirementId { get; set; }
+    public Requirement Requirement { get; set; } = null!;
+    /// <summary>Mapped (shortlisted for the job) | Rejected (not a fit or not interested)</summary>
+    public string Status { get; set; } = "Mapped";
+    public string? Reason { get; set; }
+    public int UpdatedByUserId { get; set; }
+    public User UpdatedBy { get; set; } = null!;
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>One outreach touch with a candidate: a LinkedIn message, call, email, SMS or note, with its outcome.</summary>
+public class CandidateActivity
+{
+    public int ActivityId { get; set; }
+    public int ConsultantId { get; set; }
+    public Consultant Consultant { get; set; } = null!;
+    public int? RequirementId { get; set; }
+    public Requirement? Requirement { get; set; }
+    public int UserId { get; set; }
+    public User User { get; set; } = null!;
+    public string Channel { get; set; } = "Note";
+    public string? Outcome { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>A reminder to get back to a candidate (e.g. "call back Thursday").</summary>
+public class CandidateReminder
+{
+    public int ReminderId { get; set; }
+    public int ConsultantId { get; set; }
+    public Consultant Consultant { get; set; } = null!;
+    public int UserId { get; set; }
+    public User User { get; set; } = null!;
+    public DateTime DueUtc { get; set; }
+    public string? Note { get; set; }
+    /// <summary>Open | Done | Dismissed</summary>
+    public string Status { get; set; } = "Open";
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? ClosedUtc { get; set; }
 }

@@ -140,6 +140,43 @@ The **External Jobs** page searches outside job boards and scores every job agai
 
 Searches send only the job title, skills and location, never consultant names or contact details. Visa rules, rates and contract type are read from the job description, so confirm them with the employer or vendor before you apply.
 
+## LinkedIn side panel (browser extension)
+
+LinkedIn offers no API for profiles or job search, so Collaborate-Bench ships a Chrome/Edge side panel in [`extension/`](extension/README.md). It works the way recruiter extensions in commercial ATS tools do.
+
+**On a profile:**
+- see whether the person is already saved, and by whom
+- **save as lead** (AI parses the profile)
+- map them to a requirement, or reject them for it
+- log messages and calls with their outcome
+- set reminders
+- see the activity timeline
+- see open jobs that fit
+
+**On a job post:** review an AI-drafted requirement, save it, and see bench matches.
+
+**Heads-ups:**
+- a teammate contacted them recently
+- they said "not interested"
+- they're based in the EU/EEA or UK (GDPR consent)
+- they're based outside the US
+- a reminder is overdue
+
+**How leads work:**
+- Leads have status `Lead`. They stay out of bench lists, matching, the dashboard and the Autopilot until someone uses **Move to bench** on the portal's **LinkedIn Leads** page.
+- Profiles are de-duplicated by URL. If someone outside your team saved the profile, you're told who, and you can't save a second copy.
+- Outreach is visible to everyone who can see the consultant.
+
+**What it doesn't do:** the panel reads only the page the recruiter has open, and saves only on a click. There is no crawling, auto-messaging or auto-applying.
+
+**Signing in:**
+- **Password users** sign in to the panel directly.
+- **Microsoft users** press **Connect the extension** on the LinkedIn Leads page to get a key. The key is valid for `Jwt:ExtensionLifetimeDays` (default 14), and a key can't be used to create another key.
+
+**API:** `/api/linkedin/*` (see Swagger).
+
+**Running SQL scripts by hand:** the new filtered unique indexes need `QUOTED_IDENTIFIER ON`. With `sqlcmd`, add `-I`.
+
 ## Sign in with Microsoft and vendor email tracking
 
 There are two ways to sign in:

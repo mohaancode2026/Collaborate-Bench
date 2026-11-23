@@ -203,6 +203,22 @@ public sealed class AuthController(AppDbContext db, TokenService tokens, AuditSe
         return await InfoAsync(u, User.FindFirstValue("amr") ?? "pwd");
     }
 
+    /// <summary>Issues a key for the Collaborate-Bench browser extension (LinkedIn side panel), valid Jwt:ExtensionLifetimeDays (default 14).
+    /// Works for password and Microsoft users alike. A key can't be used to issue another key, so it can't be renewed forever without the portal.</summary>
+    [HttpPost("extension-key")]
+    public async Task<LoginResponse> ExtensionKey()
+    {
+        if (User.FindFirstValue("amr") == "ext")
+            throw AppException.Forbidden("Sign in to the portal to create a new extension key.");
+        var u = await UsersWithDetails().AsNoTracking().FirstOrDefaultAsync(x => x.UserId == me.RequiredId && x.IsActive)
+                ?? throw new AppException(401, "UNAUTHENTICATED", "Please sign in", "Your account no longer exists.");
+        var info = await InfoAsync(u, "ext");
+        var days = Math.Clamp(cfg.GetValue("Jwt:ExtensionLifetimeDays", 14), 1, 90);
+        var (token, exp) = tokens.Issue(new TokenUser(u.UserId, u.FullName, u.Email, u.Role.Name, u.Role.DataScope, info.Permissions, "ext"), TimeSpan.FromDays(days));
+        await audit.LogAsync("EXTENSION_KEY", $"Created a browser extension key (valid {days} days)", "User", u.UserId);
+        return new LoginResponse(token, exp, info);
+    }
+
     /// <summary>Records the sign-out in the audit log. Tokens are stateless, so the browser simply discards its copy.</summary>
     [HttpPost("logout")]
     public async Task<IActionResult> Logout()

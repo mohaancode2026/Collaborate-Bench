@@ -4,7 +4,7 @@ import { api, Consultant, download, fetchFile, Requirement, ResumeDoc, ResumeSou
 import { useAuth } from '../auth';
 import { ComposeDialog } from '../compose';
 import { fileToText } from '../resumeFile';
-import { AiBadge, Alert, Empty, Field, FieldErrors, Modal, Spinner, ago, useConfirm, useErrorHandler, useToast } from '../ui';
+import { AiBadge, Alert, Empty, Field, FieldErrors, Modal, Spinner, ago, copyText, useConfirm, useErrorHandler, useToast } from '../ui';
 
 type Job = ResumeDoc['experience'][number];
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -27,7 +27,7 @@ export default function ResumeBuilder() {
   const [doc, setDoc] = useState<ResumeDoc | null>(null);
   const [name, setName] = useState('');
   const [dirty, setDirty] = useState(false);
-  const [view, setView] = useState<'preview' | 'edit'>('preview');
+  const [view, setView] = useState<'preview' | 'edit' | 'design'>('preview');
   // ?requirement= preselects the job (e.g. when opened from the Match Agent).
   const [t, setT] = useState({ mode: 'req' as 'req' | 'jd', requirementId: params.get('requirement') ?? '', jobTitle: '', client: '', jd: '', hideContact: true, focus: '' });
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -132,7 +132,8 @@ export default function ResumeBuilder() {
     if (!doc) return;
     const w = window.open('', '_blank');
     if (!w) { notify('warning', 'Pop-up blocked', 'Allow pop-ups for this site to print or save as PDF.'); return; }
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(doc.name)} - Resume</title><style>${PRINT_CSS}</style></head><body>${previewHtml(doc)}</body></html>`);
+    const margin = doc.template === 'compact' ? '0.6in' : '0.75in';
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(doc.name)} - Resume</title><style>@page{size:letter;margin:${margin}}body{margin:0}${RESUME_CSS}</style></head><body>${previewHtml(doc)}</body></html>`);
     w.document.close();
     w.focus();
     setTimeout(() => w.print(), 300);
@@ -198,23 +199,32 @@ export default function ResumeBuilder() {
           </>}
         </div></aside>
 
-        <section className="card">{!cur || !doc ? <Empty>{source ? 'Pick the requirement and click "Tailor resume".' : 'Upload the original resume to get started.'}</Empty> : <>
-          <div className="card-h">
-            <div className="flex" style={{ flex: 1, minWidth: 0 }}>
-              <input className="inp" style={{ maxWidth: 360, fontWeight: 600 }} value={name} onChange={e => { setName(e.target.value); setDirty(true); }} aria-label="Version name" />
+        <section className="card rb-main">{!cur || !doc ? <Empty>{source ? 'Pick the requirement and click "Tailor resume".' : 'Upload the original resume to get started.'}</Empty> : <>
+          <div className="rb-top">
+            <div className="rb-title">
+              <input className="inp" value={name} onChange={e => { setName(e.target.value); setDirty(true); }} aria-label="Version name" />
               <AiBadge source={cur.engine} />
+              {dirty ? <span className="tag y">Unsaved changes</span> : <span className="muted rb-saved">Saved {ago(cur.updatedUtc)}</span>}
             </div>
-            <div className="flex">
-              <div className="tabs"><button className={view === 'preview' ? 'on' : ''} onClick={() => setView('preview')}>Preview</button><button className={view === 'edit' ? 'on' : ''} onClick={() => setView('edit')}>Edit</button></div>
+            <div className="rb-actions">
               {dirty && <button className="btn btn-sm btn-primary" onClick={save} disabled={saving}>{saving ? <Spinner /> : 'Save changes'}</button>}
               <button className="btn btn-sm btn-outline" onClick={downloadDocx}>⬇ Word</button>
               <button className="btn btn-sm btn-outline" onClick={print}>Print / PDF</button>
+              <button className="btn btn-sm btn-outline" onClick={() => copyText(toPlainText(doc), notify)} title="For vendor portals that only accept text">Copy as text</button>
               <button className="btn btn-sm btn-outline" onClick={emailVendor}>✉ Email to vendor</button>
             </div>
           </div>
           <div className="card-b">
             <Review v={cur} />
-            {view === 'preview' ? <div className="resume-preview" dangerouslySetInnerHTML={{ __html: previewHtml(doc) }} /> : <Editor doc={doc} onChange={edit} />}
+            <div className="tabs rb-tabs">
+              <button className={view === 'preview' ? 'on' : ''} onClick={() => setView('preview')}>Preview</button>
+              <button className={view === 'design' ? 'on' : ''} onClick={() => setView('design')}>Design</button>
+              <button className={view === 'edit' ? 'on' : ''} onClick={() => setView('edit')}>Edit content</button>
+            </div>
+            {view === 'edit' ? <Editor doc={doc} onChange={edit} /> : <>
+              {view === 'design' && <Design doc={doc} onChange={edit} />}
+              <Paper doc={doc} />
+            </>}
           </div>
         </>}</section>
       </div>
@@ -229,19 +239,99 @@ export default function ResumeBuilder() {
 /** What the AI changed, what's missing, and anything that couldn't be verified. Shown above every version. */
 function Review({ v }: { v: TailoredResume }) {
   const [showChanges, setShowChanges] = useState(false);
+  const total = v.matched.length + v.gaps.length;
+  const pct = total ? Math.round((v.matched.length / total) * 100) : 0;
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div className="rb-reviewbox">
       {v.notice && <Alert type="info" title="Built-in engine">{v.notice}</Alert>}
       {v.warnings.length > 0 && <Alert type="warning" title={`Check ${v.warnings.length} item${v.warnings.length === 1 ? '' : 's'} before sending`}>
         <ul className="rb-list">{v.warnings.map(w => <li key={w}>{w}</li>)}</ul></Alert>}
+      {total > 0 && (
+        <div className="rb-score">
+          <div className="rb-score-n" style={{ color: pct >= 75 ? 'var(--ok, #047857)' : pct >= 50 ? '#b45309' : '#b91c1c' }}>{pct}%</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <b>Keyword match</b> <span className="muted">· the resume shows {v.matched.length} of the {total} skills this job asks for</span>
+            <div className="rb-bar"><span style={{ width: `${pct}%`, background: pct >= 75 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444' }} /></div>
+          </div>
+        </div>)}
       <div className="rb-review">
-        <div><small>Matches the job</small><div>{v.matched.length ? v.matched.map(s => <span key={s} className="tag g">{s}</span>) : <span className="muted">None found</span>}</div></div>
-        <div><small>Gaps: not in the resume, so not added</small><div>{v.gaps.length ? v.gaps.map(s => <span key={s} className="tag r">{s}</span>) : <span className="muted">None</span>}</div>
-          {v.gaps.length > 0 && <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>Cover these in screening, or ask the consultant whether they have the experience and update the original resume.</p>}</div>
+        <div><small>Matches the job</small><div className="rb-chips">{v.matched.length ? v.matched.map(s => <span key={s} className="tag g">{s}</span>) : <span className="muted">None found</span>}</div></div>
+        <div><small>Gaps: not in the resume, so not added</small><div className="rb-chips">{v.gaps.length ? v.gaps.map(s => <span key={s} className="tag r" title={s}>{s}</span>) : <span className="muted">None</span>}</div>
+          {v.gaps.length > 0 && <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>Cover these in screening, or ask the consultant whether they have the experience and update the original resume.</p>}</div>
       </div>
       {v.changes.length > 0 && <button className="btn btn-sm" style={{ color: 'var(--primary)', padding: 0 }} onClick={() => setShowChanges(s => !s)}>
         {showChanges ? 'Hide' : 'Show'} what changed ({v.changes.length})</button>}
       {showChanges && <ul className="rb-list" style={{ marginTop: 6 }}>{v.changes.map(c => <li key={c}>{c}</li>)}</ul>}
+    </div>
+  );
+}
+
+const TEMPLATES = [
+  { id: 'classic', name: 'Classic', text: 'Traditional and ATS-safe. Fits every vendor.' },
+  { id: 'modern', name: 'Modern', text: 'Accent colour on the name, headings and roles.' },
+  { id: 'compact', name: 'Compact', text: 'Smaller type and margins: more on each page.' },
+];
+const ACCENTS = [['1E293B', 'Navy'], ['1D4ED8', 'Blue'], ['0F766E', 'Teal'], ['15803D', 'Green'], ['9F1239', 'Maroon'], ['6D28D9', 'Purple'], ['374151', 'Charcoal']];
+const SECTIONS = [['summary', 'Professional summary'], ['skills', 'Technical skills'], ['experience', 'Professional experience'], ['education', 'Education'], ['certifications', 'Certifications']];
+
+/** Template, accent colour and which sections to include. Saved with the version; the Word file and PDF follow it. */
+function Design({ doc, onChange }: { doc: ResumeDoc; onChange: (d: ResumeDoc) => void }) {
+  const tpl = doc.template ?? 'classic', accent = (doc.accent ?? '1E293B').toUpperCase(), hidden = doc.hiddenSections ?? [];
+  return (
+    <div className="rb-design">
+      <div>
+        <small>Template</small>
+        <div className="rb-tpls">{TEMPLATES.map(t => (
+          <button key={t.id} type="button" className={`rb-tpl${tpl === t.id ? ' on' : ''}`} onClick={() => onChange({ ...doc, template: t.id })}>
+            <span className={`rb-thumb ${t.id}`} style={{ ['--ac' as string]: `#${accent}` }}><i /><i /><i /><i /><i /></span>
+            <b>{t.name}</b><span>{t.text}</span>
+          </button>))}</div>
+      </div>
+      <div className="rb-design-row">
+        <div>
+          <small>Accent colour</small>
+          <div className="rb-swatches">{ACCENTS.map(([hex, label]) => (
+            <button key={hex} type="button" title={label} aria-label={label} className={accent === hex ? 'on' : ''} style={{ background: `#${hex}` }}
+              onClick={() => onChange({ ...doc, accent: hex })} />))}</div>
+        </div>
+        <div>
+          <small>Sections to include</small>
+          <div className="rb-secs">{SECTIONS.map(([id, label]) => (
+            <label key={id} className="chip"><input type="checkbox" checked={!hidden.includes(id)}
+              onChange={e => onChange({ ...doc, hiddenSections: e.target.checked ? hidden.filter(x => x !== id) : [...hidden, id] })} /> {label}</label>))}</div>
+        </div>
+      </div>
+      <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>Click <b>Save changes</b> to keep the design. The Word download and Print / PDF use it too.</p>
+    </div>
+  );
+}
+
+/** The resume on a US Letter page, with an estimate of how many pages it prints to. */
+function Paper({ doc }: { doc: ResumeDoc }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pages, setPages] = useState(1);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // The on-screen page is US Letter scaled to this width: page height = width × 11/8.5. Content per page is that minus
+    // the top and bottom margins (the paper's padding), as when printing.
+    const measure = () => {
+      const w = el.clientWidth || 816;
+      const cs = getComputedStyle(el);
+      const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+      const perPage = w * (11 / 8.5) - padY;
+      const content = el.scrollHeight - padY;
+      setPages(Math.max(1, Math.ceil((content - 4) / perPage)));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [doc]);
+  return (
+    <div className="rb-canvas">
+      <div className="rb-pages"><span>US Letter</span><span className={pages > 2 ? 'warn' : ''}>≈ {pages} page{pages === 1 ? '' : 's'}{pages > 2 ? ' · vendors prefer 2 or fewer' : ''}</span></div>
+      <div ref={ref} className={`rb-paper${doc.template === 'compact' ? ' compact' : ''}`} dangerouslySetInnerHTML={{ __html: previewHtml(doc) }} />
     </div>
   );
 }
@@ -307,25 +397,109 @@ function Editor({ doc, onChange }: { doc: ResumeDoc; onChange: (d: ResumeDoc) =>
   );
 }
 
-/** Same layout as the Word export, for the preview and for printing to PDF. */
-function previewHtml(d: ResumeDoc): string {
-  const sec = (title: string, inner: string) => (inner ? `<h2>${esc(title)}</h2>${inner}` : '');
-  const contact = [d.location, d.email, d.phone].filter(Boolean).map(x => esc(x!)).join(' &nbsp;|&nbsp; ');
-  const jobs = d.experience.map(j => `<div class="job"><div class="jh"><b>${esc(j.title)}${j.company ? ` &nbsp;|&nbsp; ${esc(j.company)}` : ''}</b><span>${esc([j.start, j.end].filter(Boolean).join(' – '))}</span></div>
-    ${j.location ? `<div class="loc">${esc(j.location)}</div>` : ''}<ul>${j.bullets.filter(Boolean).map(b => `<li>${esc(b)}</li>`).join('')}</ul>
-    ${j.environment ? `<div class="env"><b>Environment:</b> ${esc(j.environment)}</div>` : ''}</div>`).join('');
-  const extra = d.additionalText ? `<div class="raw">${esc(d.additionalText)}</div>` : '';
-  return `<div class="rv"><h1>${esc(d.name)}</h1>${d.headline ? `<div class="hl">${esc(d.headline)}</div>` : ''}${contact ? `<div class="ct">${contact}</div>` : ''}
-    ${sec('Professional Summary', d.summary ? `<p>${esc(d.summary)}</p>` : '')}
-    ${sec('Technical Skills', d.skills.map(g => `<p><b>${esc(g.category)}:</b> ${esc(g.items.filter(Boolean).join(', '))}</p>`).join(''))}
-    ${sec('Professional Experience', jobs + extra)}
-    ${sec('Education', d.education.map(e => `<p><b>${esc(e.degree)}</b>${[e.school, e.year].filter(Boolean).length ? ` &nbsp;|&nbsp; ${esc([e.school, e.year].filter(Boolean).join(', '))}` : ''}</p>`).join(''))}
-    ${sec('Certifications', d.certifications.length ? `<ul>${d.certifications.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : '')}</div>`;
+type RawLine = { kind: 'heading' | 'meta' | 'bullet' | 'text'; text: string };
+/** Reads the original experience text line by line (same rules as the Word export):
+ *  a line with a date range ("04/2017 to 09/2018", "2019 – Present"), a short all-caps line or "Client: …" is a heading;
+ *  the short line right after a heading (company, city) is meta; bullet lines and full sentences are bullets. */
+function classifyRaw(text: string): RawLine[] {
+  const out: RawLine[] = [];
+  let prev: RawLine['kind'] | null = null;
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    const t = raw.trim();
+    if (!t) continue;
+    const dated = t.length <= 120 && /\b(19|20)\d{2}\b|\b\d{1,2}\/\d{2,4}\b/.test(t) && /(to|–|—|-)\s*(present|current|till date|now|\d)/i.test(t);
+    const caps = t.length >= 3 && t.length <= 60 && t === t.toUpperCase() && /[A-Z]/.test(t) && !t.includes('.');
+    let kind: RawLine['kind'];
+    if (/^[•\-*▪·]\s*/.test(t)) kind = 'bullet';
+    else if (dated || caps || /^(client|employer|company|project|role)\s*:/i.test(t)) kind = 'heading';
+    else if (prev === 'heading' && t.length <= 80 && !/[.!?]$/.test(t)) kind = 'meta';
+    else if (/[.!?]$/.test(t) && t.length >= 25) kind = 'bullet';
+    else kind = 'text';
+    out.push({ kind, text: kind === 'bullet' ? t.replace(/^[•\-*▪·]\s*/, '') : kind === 'heading' ? t.replace(/:$/, '') : t });
+    prev = kind;
+  }
+  return out;
 }
 
-const PRINT_CSS = `@page{size:letter;margin:0.75in}body{font-family:Calibri,'Segoe UI',Arial,sans-serif;color:#111827;font-size:10.5pt;line-height:1.35;margin:0}
-.rv h1{font-size:18pt;margin:0 0 2px;color:#1E293B}.rv .hl{color:#475569;font-size:11.5pt}.rv .ct{color:#475569;font-size:10pt;margin:2px 0 6px}
-.rv h2{font-size:11pt;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #CBD5E1;margin:14px 0 6px;padding-bottom:2px;color:#1E293B;break-after:avoid}
-.rv p{margin:0 0 4px}.rv ul{margin:2px 0 4px 18px;padding:0}.rv li{margin:0 0 2px}.rv .job{margin-top:8px;break-inside:avoid-page}
-.rv .jh{display:flex;justify-content:space-between;gap:12px}.rv .jh span{color:#475569;white-space:nowrap}.rv .loc,.rv .env{color:#475569;font-size:10pt}
-.rv .raw{white-space:pre-wrap}`;
+function rawHtml(text: string): string {
+  const out: string[] = [];
+  let list: string[] = [];
+  const flush = () => { if (list.length) { out.push(`<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`); list = []; } };
+  for (const l of classifyRaw(text)) {
+    if (l.kind === 'bullet') { list.push(l.text); continue; }
+    flush();
+    out.push(l.kind === 'heading' ? `<h3>${esc(l.text)}</h3>` : l.kind === 'meta' ? `<div class="meta">${esc(l.text)}</div>` : `<p>${esc(l.text)}</p>`);
+  }
+  flush();
+  return `<div class="raw">${out.join('')}</div>`;
+}
+
+const shows = (d: ResumeDoc, s: string) => !(d.hiddenSections ?? []).includes(s);
+
+/** Same layout as the Word export, for the preview and for printing to PDF. */
+function previewHtml(d: ResumeDoc): string {
+  const sec = (id: string, title: string, inner: string) => (inner && shows(d, id) ? `<h2>${esc(title)}</h2>${inner}` : '');
+  const contact = [d.location, d.email, d.phone].filter(Boolean).map(x => esc(x!)).join(' &nbsp;|&nbsp; ');
+  const jobs = d.experience.map(j => `<div class="job"><div class="jh"><b><span class="t">${esc(j.title)}</span>${j.company ? ` &nbsp;|&nbsp; ${esc(j.company)}` : ''}</b><span>${esc([j.start, j.end].filter(Boolean).join(' – '))}</span></div>
+    ${j.location ? `<div class="loc">${esc(j.location)}</div>` : ''}<ul>${j.bullets.filter(Boolean).map(b => `<li>${esc(b)}</li>`).join('')}</ul>
+    ${j.environment ? `<div class="env"><b>Environment:</b> ${esc(j.environment)}</div>` : ''}</div>`).join('');
+  const extra = d.additionalText ? rawHtml(d.additionalText) : '';
+  const accent = /^[0-9a-f]{6}$/i.test(d.accent ?? '') ? `#${d.accent}` : '#1E293B';
+  return `<div class="rv tpl-${esc(d.template ?? 'classic')}" style="--ac:${accent}">
+    <div class="head"><h1>${esc(d.name)}</h1>${d.headline ? `<div class="hl">${esc(d.headline)}</div>` : ''}${contact ? `<div class="ct">${contact}</div>` : ''}</div>
+    ${sec('summary', 'Professional Summary', d.summary ? `<p>${esc(d.summary)}</p>` : '')}
+    ${sec('skills', 'Technical Skills', d.skills.length ? `<div class="sk">${d.skills.map(g => `<p><b>${esc(g.category)}:</b> ${esc(g.items.filter(Boolean).join(', '))}</p>`).join('')}</div>` : '')}
+    ${sec('experience', 'Professional Experience', jobs + extra)}
+    ${sec('education', 'Education', d.education.map(e => `<p><b>${esc(e.degree)}</b>${[e.school, e.year].filter(Boolean).length ? ` &nbsp;|&nbsp; ${esc([e.school, e.year].filter(Boolean).join(', '))}` : ''}</p>`).join(''))}
+    ${sec('certifications', 'Certifications', d.certifications.length ? `<ul>${d.certifications.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : '')}</div>`;
+}
+
+/** Plain text for vendor portals and emails that don't take attachments. */
+function toPlainText(d: ResumeDoc): string {
+  const out: string[] = [d.name];
+  if (d.headline) out.push(d.headline);
+  const contact = [d.location, d.email, d.phone].filter(Boolean).join(' | ');
+  if (contact) out.push(contact);
+  const sec = (id: string, title: string, lines: string[]) => { if (shows(d, id) && lines.some(Boolean)) out.push('', title.toUpperCase(), ...lines.filter(Boolean)); };
+  sec('summary', 'Professional Summary', [d.summary]);
+  sec('skills', 'Technical Skills', d.skills.map(g => `${g.category}: ${g.items.filter(Boolean).join(', ')}`));
+  sec('experience', 'Professional Experience', [
+    ...d.experience.flatMap(j => ['', `${j.title}${j.company ? ` | ${j.company}` : ''}${j.start || j.end ? ` (${[j.start, j.end].filter(Boolean).join(' – ')})` : ''}`,
+      ...(j.location ? [j.location] : []), ...j.bullets.filter(Boolean).map(b => `• ${b}`), ...(j.environment ? [`Environment: ${j.environment}`] : [])]),
+    ...(d.additionalText ? classifyRaw(d.additionalText).flatMap(l => l.kind === 'heading' ? ['', l.text] : [l.kind === 'bullet' ? `• ${l.text}` : l.text]) : [])]);
+  sec('education', 'Education', d.education.map(e => [e.degree, e.school, e.year].filter(Boolean).join(', ')));
+  sec('certifications', 'Certifications', d.certifications.map(c => `• ${c}`));
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** One stylesheet for the on-screen page and for Print / PDF, so both look the same (sizes in points, like the Word file). */
+const RESUME_CSS = `
+.rv{--ac:#1E293B;font-family:Calibri,Carlito,'Segoe UI',Arial,sans-serif;color:#111827;font-size:10.5pt;line-height:1.38;overflow-wrap:anywhere}
+.rv h1{font-size:18pt;line-height:1.15;margin:0 0 2pt;color:#1E293B;font-weight:700}
+.rv .hl{color:#475569;font-size:11.5pt}
+.rv .ct{color:#475569;font-size:9.5pt;margin:3pt 0 2pt}
+.rv h2{font-size:11pt;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ac);border-bottom:1px solid #CBD5E1;margin:13pt 0 6pt;padding-bottom:2pt;break-after:avoid}
+.rv p{margin:0 0 4pt}.rv ul{margin:2pt 0 5pt 15pt;padding:0}.rv li{margin:0 0 2pt;padding-left:2pt}
+.rv .job{margin-top:8pt;break-inside:avoid-page}
+.rv .jh{display:flex;justify-content:space-between;align-items:baseline;gap:10pt}.rv .jh b{min-width:0}.rv .jh>span{color:#475569;white-space:nowrap;flex:none}
+.rv .loc,.rv .env{color:#475569;font-size:9.5pt}.rv .loc{font-style:italic}
+.rv .raw h3{font-size:10.5pt;margin:9pt 0 1pt;color:#1E293B;break-after:avoid}.rv .raw p{margin:0 0 3pt}.rv .raw .meta{color:#475569;font-style:italic;font-size:9.5pt;margin-bottom:2pt}
+.rv.tpl-modern .head{border-left:4pt solid var(--ac);padding:1pt 0 1pt 10pt;margin-bottom:6pt}
+.rv.tpl-modern h1{color:var(--ac);font-size:21pt;letter-spacing:-.01em}
+.rv.tpl-modern .hl{color:#1E293B;font-weight:700}
+.rv.tpl-modern h2{border-bottom:2px solid var(--ac);letter-spacing:.09em}
+.rv.tpl-modern .jh .t,.rv.tpl-modern .raw h3{color:var(--ac)}
+.rv.tpl-compact{font-size:9.5pt;line-height:1.3}
+.rv.tpl-compact h1{font-size:16pt}.rv.tpl-compact .hl{font-size:10.5pt}
+.rv.tpl-compact h2{font-size:10pt;margin:9pt 0 4pt}
+.rv.tpl-compact .job{margin-top:5pt}.rv.tpl-compact li{margin-bottom:1pt}
+.rv.tpl-compact .sk{columns:2;column-gap:18pt}.rv.tpl-compact .sk p{break-inside:avoid}
+`;
+
+// The on-screen page uses the same stylesheet.
+if (typeof document !== 'undefined' && !document.getElementById('cb-resume-css')) {
+  const tag = document.createElement('style');
+  tag.id = 'cb-resume-css';
+  tag.textContent = RESUME_CSS;
+  document.head.appendChild(tag);
+}

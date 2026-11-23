@@ -45,6 +45,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
     public DbSet<AutopilotSettings> AutopilotSettings => Set<AutopilotSettings>();
     public DbSet<AutopilotNotification> AutopilotNotifications => Set<AutopilotNotification>();
     public DbSet<NotificationPrefs> NotificationPrefs => Set<NotificationPrefs>();
+    public DbSet<CandidateLead> CandidateLeads => Set<CandidateLead>();
+    public DbSet<CandidateActivity> CandidateActivities => Set<CandidateActivity>();
+    public DbSet<CandidateReminder> CandidateReminders => Set<CandidateReminder>();
 
     /// <summary>SQL Server returns DATETIME2 without a kind; mark everything UTC so the browser shows correct local times.</summary>
     private sealed class UtcConverter() : ValueConverter<DateTime, DateTime>(
@@ -94,6 +97,16 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerUserId);
             e.Property(x => x.Skills).HasConversion(JsonList, JsonListComparer);
             e.Property(x => x.RowVer).IsRowVersion();   // optimistic concurrency
+            e.Property(x => x.LinkedInUrl).HasMaxLength(300);
+            e.Property(x => x.Source).HasMaxLength(20).IsUnicode(false).HasDefaultValue("Manual");
+            e.Property(x => x.PassportProtected).HasMaxLength(600).IsUnicode(false);
+            e.Property(x => x.PassportLast4).HasMaxLength(4).IsUnicode(false);
+            e.Property(x => x.VisaValidUntil).HasColumnType("date");
+            e.Property(x => x.Availability).HasMaxLength(60);
+            e.Property(x => x.PreferredLocations).HasMaxLength(200);
+            e.Property(x => x.Education).HasMaxLength(300);
+            e.Property(x => x.Certifications).HasMaxLength(500);
+            e.HasIndex(x => x.LinkedInUrl).IsUnique().HasFilter("[LinkedInUrl] IS NOT NULL").HasDatabaseName("UQ_Consultants_LinkedInUrl");
             // Team visibility. SQL Server 2012 has no row-level security, so EF applies the same rule as sec.fn_CanAccessOwner.
             e.HasQueryFilter(x => CurrentDataScope == "ALL"
                 || (CurrentDataScope == "OWN" && x.OwnerUserId == CurrentUserId)
@@ -108,6 +121,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.Property(x => x.Skills).HasConversion(JsonList, JsonListComparer);
             e.Property(x => x.AcceptedVisas).HasConversion(JsonList, JsonListComparer);
             e.Property(x => x.RowVer).IsRowVersion();
+            e.Property(x => x.SourceUrl).HasMaxLength(400);
+            e.HasIndex(x => x.SourceUrl).IsUnique().HasFilter("[SourceUrl] IS NOT NULL").HasDatabaseName("UQ_Requirements_SourceUrl");
         });
         m.Entity<JobPosting>(e => { e.ToTable("JobPostings", "bench"); e.HasKey(x => x.PostingId); });
         m.Entity<SavedRequirement>(e => { e.ToTable("SavedRequirements", "bench"); e.HasKey(x => new { x.UserId, x.RequirementId }); });
@@ -224,6 +239,50 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.Property(x => x.Status).HasMaxLength(10).IsUnicode(false);
             e.Property(x => x.Error).HasMaxLength(300);
             e.HasIndex(x => new { x.Status, x.UserId });
+        });
+        // Candidate outreach (LinkedIn side panel). Visible to whoever can see the consultant, so teammates don't contact the same person twice.
+        m.Entity<CandidateLead>(e =>
+        {
+            e.ToTable("CandidateLeads", "bench");
+            e.HasKey(x => x.LeadId);
+            e.Property(x => x.Status).HasMaxLength(12).IsUnicode(false);
+            e.Property(x => x.Reason).HasMaxLength(300);
+            e.HasOne(x => x.Consultant).WithMany().HasForeignKey(x => x.ConsultantId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Requirement).WithMany().HasForeignKey(x => x.RequirementId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(x => x.UpdatedBy).WithMany().HasForeignKey(x => x.UpdatedByUserId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(x => new { x.ConsultantId, x.RequirementId }).IsUnique().HasDatabaseName("UQ_Lead_ConsReq");
+            e.HasQueryFilter(x => CurrentDataScope == "ALL"
+                || (CurrentDataScope == "OWN" && x.Consultant.OwnerUserId == CurrentUserId)
+                || (CurrentDataScope == "TEAM" && UserHierarchy.Any(h => h.AncestorUserId == CurrentUserId && h.DescendantUserId == x.Consultant.OwnerUserId)));
+        });
+        m.Entity<CandidateActivity>(e =>
+        {
+            e.ToTable("CandidateActivities", "bench");
+            e.HasKey(x => x.ActivityId);
+            e.Property(x => x.Channel).HasMaxLength(20).IsUnicode(false);
+            e.Property(x => x.Outcome).HasMaxLength(30).IsUnicode(false);
+            e.Property(x => x.Note).HasMaxLength(1000);
+            e.HasOne(x => x.Consultant).WithMany().HasForeignKey(x => x.ConsultantId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Requirement).WithMany().HasForeignKey(x => x.RequirementId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(x => new { x.ConsultantId, x.CreatedUtc });
+            e.HasQueryFilter(x => CurrentDataScope == "ALL"
+                || (CurrentDataScope == "OWN" && x.Consultant.OwnerUserId == CurrentUserId)
+                || (CurrentDataScope == "TEAM" && UserHierarchy.Any(h => h.AncestorUserId == CurrentUserId && h.DescendantUserId == x.Consultant.OwnerUserId)));
+        });
+        m.Entity<CandidateReminder>(e =>
+        {
+            e.ToTable("CandidateReminders", "bench");
+            e.HasKey(x => x.ReminderId);
+            e.Property(x => x.Note).HasMaxLength(300);
+            e.Property(x => x.Status).HasMaxLength(12).IsUnicode(false);
+            e.HasOne(x => x.Consultant).WithMany().HasForeignKey(x => x.ConsultantId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(x => new { x.UserId, x.Status, x.DueUtc });
+            e.HasIndex(x => x.ConsultantId);
+            e.HasQueryFilter(x => CurrentDataScope == "ALL"
+                || (CurrentDataScope == "OWN" && x.Consultant.OwnerUserId == CurrentUserId)
+                || (CurrentDataScope == "TEAM" && UserHierarchy.Any(h => h.AncestorUserId == CurrentUserId && h.DescendantUserId == x.Consultant.OwnerUserId)));
         });
         m.Entity<NotificationPrefs>(e =>
         {

@@ -18,6 +18,18 @@ public sealed class ResumeDoc
     public List<string> Certifications { get; set; } = new();
     /// <summary>Original text kept as-is when it couldn't be structured (built-in engine).</summary>
     public string? AdditionalText { get; set; }
+
+    // ----- design (preview, print and Word export all follow these) -----
+    /// <summary>classic | modern | compact</summary>
+    public string Template { get; set; } = "classic";
+    /// <summary>Accent colour as 6 hex digits, e.g. "1E293B".</summary>
+    public string Accent { get; set; } = "1E293B";
+    /// <summary>Sections left out of this version: summary, skills, experience, education, certifications.</summary>
+    public List<string> HiddenSections { get; set; } = new();
+
+    public static readonly string[] Templates = ["classic", "modern", "compact"];
+    public static readonly string[] Sections = ["summary", "skills", "experience", "education", "certifications"];
+    public bool Shows(string section) => !HiddenSections.Contains(section, StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class SkillGroup

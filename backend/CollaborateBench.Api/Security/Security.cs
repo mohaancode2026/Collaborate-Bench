@@ -98,10 +98,11 @@ public sealed class TokenService
         return Convert.FromBase64String(s.PadRight(s.Length + (4 - s.Length % 4) % 4, '='));
     }
 
-    public (string Token, DateTime ExpiresUtc) Issue(TokenUser u)
+    /// <param name="lifetime">Overrides Jwt:LifetimeMinutes (used for the browser extension's longer-lived key).</param>
+    public (string Token, DateTime ExpiresUtc) Issue(TokenUser u, TimeSpan? lifetime = null)
     {
         var now = DateTimeOffset.UtcNow;
-        var exp = now.AddMinutes(_minutes);
+        var exp = lifetime is { } l ? now.Add(l) : now.AddMinutes(_minutes);
         var header = B64(Encoding.UTF8.GetBytes("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"));
         var payload = new JsonObject
         {

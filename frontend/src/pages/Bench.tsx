@@ -84,7 +84,7 @@ export default function Bench() {
                 <td><span className={`tag ${statusClass(c.status)}`}>{c.status}</span></td>
                 <td style={{ whiteSpace: 'nowrap' }}>
                   <button className="btn btn-sm btn-outline" onClick={() => nav(`/match?consultant=${c.id}`)}>Match</button>{' '}
-                  {can('bench.edit') && <button className="btn btn-sm btn-outline" onClick={() => { setErrors({}); setEdit({ id: c.id, draft: toDraft(c) }); }}>Edit</button>}
+                  {can('bench.edit') && <button className="btn btn-sm btn-outline" onClick={() => { setErrors({}); setEdit({ id: c.id, draft: { ...toDraft(c), id: c.id } }); }}>Edit</button>}
                 </td>
               </tr>))}
           </tbody></table>{shown.length === 0 && <Empty>No consultants match this filter in your view.</Empty>}</div>)}

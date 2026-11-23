@@ -1,7 +1,7 @@
 import { DragEvent, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../auth';
-import { Logo } from '../Layout';
+import { Brand } from '../Layout';
 
 // Marketing page. Everything listed here exists in the product; no invented customers, numbers or testimonials.
 
@@ -72,7 +72,7 @@ export default function Landing() {
   return (
     <div id="landing">
       <nav className="lnav">
-        <Link className="brand" to="/"><Logo />Collaborate‑Bench</Link>
+        <Link className="brand" to="/" aria-label="Collaborate Bench Sales home"><Brand light /></Link>
         <div className="lnav-links"><a href="#platform">Platform</a><a href="#workflow">Workflow</a><a href="#features">Features</a><a href="#security">Security</a><a href="#faq">FAQ</a></div>
         <div className="flex">{!user && <Link className="btn btn-ghost-l btn-sm" to="/login">Sign in</Link>}<Link className="btn btn-light btn-sm" to="/dashboard">Open workspace →</Link></div>
       </nav>
@@ -180,7 +180,7 @@ export default function Landing() {
       </section>
 
       <footer className="lfoot lp-foot">
-        <div><div className="brand"><Logo />Collaborate‑Bench</div><p>Bench sales software for US IT staffing teams.</p></div>
+        <div><div className="brand"><Brand light /></div><p>Bench sales software for US IT staffing teams.</p></div>
         <div><b>Product</b><a href="#platform">Platform</a><a href="#workflow">Workflow</a><a href="#features">Features</a></div>
         <div><b>Trust</b><a href="#security">Security</a><a href="#faq">FAQ</a></div>
         <div><b>Workspace</b><Link to="/login">Sign in</Link><Link to="/dashboard">Open workspace</Link></div>

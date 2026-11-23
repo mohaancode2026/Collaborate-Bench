@@ -15,9 +15,12 @@ public sealed class DataService(AppDbContext db, ICurrentUser me)
     private static readonly string[] Closed = ["Billing", "Withdrawn"];
 
     // ---------- scope helpers ----------
-    private IQueryable<Consultant> ConsultantScope(string? scope)
+    /// <param name="leads">null: everyone; false: leave out sourced leads (bench views); true: only leads.</param>
+    private IQueryable<Consultant> ConsultantScope(string? scope, bool? leads = false)
     {
         var q = db.Consultants.AsNoTracking().Where(c => c.Status != "Inactive");
+        if (leads == true) q = q.Where(c => c.Status == "Lead");
+        else if (leads == false) q = q.Where(c => c.Status != "Lead");
         var meId = me.RequiredId;
         return (scope ?? "").ToLowerInvariant() switch
         {
@@ -83,14 +86,19 @@ public sealed class DataService(AppDbContext db, ICurrentUser me)
             OwnerId = c.OwnerUserId, OwnerName = c.Owner.FullName, OwnerTeam = c.Owner.Team != null ? c.Owner.Team.Name : null,
             CreatedUtc = c.CreatedUtc,
             ActiveSubmissions = db.Submissions.Count(s => s.ConsultantId == c.ConsultantId && !Closed.Contains(s.Stage)),
+            LinkedInUrl = c.LinkedInUrl, Source = c.Source,
+            PassportOnFile = c.PassportLast4 != null ? "••••" + c.PassportLast4 : null,
+            VisaValidUntil = c.VisaValidUntil, Availability = c.Availability, PreferredLocations = c.PreferredLocations,
+            Education = c.Education, Certifications = c.Certifications, UsExp = c.UsExperienceYears,
             RowVersion = Convert.ToBase64String(c.RowVer),
         });
 
-    public async Task<List<ConsultantDto>> ConsultantsAsync(string? scope, CancellationToken ct = default) =>
-        (await ProjectConsultants(ConsultantScope(scope)).ToListAsync(ct)).Select(Finish).ToList();
+    /// <summary>Consultants in the user's view. Sourced leads are left out unless <paramref name="leadsOnly"/> is set.</summary>
+    public async Task<List<ConsultantDto>> ConsultantsAsync(string? scope, CancellationToken ct = default, bool leadsOnly = false) =>
+        (await ProjectConsultants(ConsultantScope(scope, leadsOnly ? true : false)).ToListAsync(ct)).Select(Finish).ToList();
 
     public async Task<ConsultantDto> ConsultantAsync(int id, CancellationToken ct = default) =>
-        Finish(await ProjectConsultants(ConsultantScope(null).Where(c => c.ConsultantId == id)).FirstOrDefaultAsync(ct)
+        Finish(await ProjectConsultants(ConsultantScope(null, leads: null).Where(c => c.ConsultantId == id)).FirstOrDefaultAsync(ct)
                ?? throw AppException.NotFound("Consultant"));
 
     private static ConsultantDto Finish(ConsultantDto c) { c.DaysOnBench = Days(c.CreatedUtc); return c; }

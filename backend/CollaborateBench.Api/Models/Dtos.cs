@@ -3,7 +3,8 @@ namespace CollaborateBench.Api.Models;
 public static class Domain
 {
     public static readonly string[] Visas = ["USC", "GC", "GC-EAD", "H1B", "H4-EAD", "L2-EAD", "OPT", "CPT", "STEM OPT", "TN", "EAD"];
-    public static readonly string[] ConsultantStatuses = ["Bench", "Marketing", "Placed"];
+    /// <summary>"Lead" = sourced (e.g. from LinkedIn) but not yet on the bench; leads stay out of bench lists, matching and the dashboard.</summary>
+    public static readonly string[] ConsultantStatuses = ["Bench", "Marketing", "Placed", "Lead"];
     public static readonly string[] Stages = ["Submitted", "Vendor Screen", "Client Interview", "Offer", "MSA / PO", "Billing"];
     public static readonly string[] WorkModes = ["Remote", "Hybrid", "Onsite"];
     public static readonly string[] ContractTypes = ["C2C", "W2", "1099"];
@@ -68,11 +69,28 @@ public sealed class ConsultantDto
     public int DaysOnBench { get; set; }
     [System.Text.Json.Serialization.JsonIgnore] public DateTime CreatedUtc { get; set; }
     public int ActiveSubmissions { get; set; }
+    public string? LinkedInUrl { get; set; }
+    public string Source { get; set; } = "Manual";
+    /// <summary>Masked passport number (••••1234) when one is on file; the full number only via GET consultants/{id}/passport.</summary>
+    public string? PassportOnFile { get; set; }
+    public DateTime? VisaValidUntil { get; set; }
+    public string? Availability { get; set; }
+    public string? PreferredLocations { get; set; }
+    public string? Education { get; set; }
+    public string? Certifications { get; set; }
+    public int? UsExp { get; set; }
     public string RowVersion { get; set; } = "";
 }
 public sealed record ConsultantInput(string? Name, string? Title, string? Email, string? Phone, string? Visa, string? Location,
     bool Relocate, decimal Rate, int Exp, string? Status, List<string>? Skills, string? Summary, int? OwnerId,
-    string? RowVersion, string? ResumeText, string? ResumeFileName, string? ParsedBy);
+    string? RowVersion, string? ResumeText, string? ResumeFileName, string? ParsedBy,
+    string? LinkedInUrl = null,
+    /// <summary>New passport number; leave empty to keep the one on file.</summary>
+    string? PassportNumber = null,
+    /// <summary>True removes the passport number on file.</summary>
+    bool ClearPassport = false,
+    DateTime? VisaValidUntil = null, string? Availability = null, string? PreferredLocations = null,
+    string? Education = null, string? Certifications = null, int? UsExp = null);
 
 // ---------- Requirements ----------
 public sealed class RequirementDto
@@ -169,6 +187,11 @@ public sealed class ParsedResume
     public List<string> Skills { get; set; } = new();
     public string Summary { get; set; } = "";
     public bool Relocate { get; set; }
+    public string LinkedInUrl { get; set; } = "";
+    public string Passport { get; set; } = "";
+    public string Education { get; set; } = "";
+    public string Certifications { get; set; } = "";
+    public string Availability { get; set; } = "";
     public string Source { get; set; } = "rules";
     public string? Notice { get; set; }
     public string? DuplicateWarning { get; set; }

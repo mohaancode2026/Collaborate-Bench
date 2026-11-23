@@ -4,6 +4,7 @@ using CollaborateBench.Api.Infrastructure;
 using CollaborateBench.Api.Models;
 using CollaborateBench.Api.Security;
 using CollaborateBench.Api.Services;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,13 +12,17 @@ namespace CollaborateBench.Api.Controllers;
 
 /// <summary>The bench: consultants owned by recruiters. Team filters in AppDbContext limit every query to the caller's data scope.</summary>
 [ApiController, Route("api/consultants")]
-public sealed class ConsultantsController(AppDbContext db, DataService data, ICurrentUser me, AuditService audit) : ControllerBase
+public sealed class ConsultantsController(AppDbContext db, DataService data, ICurrentUser me, AuditService audit, IDataProtectionProvider dp) : ControllerBase
 {
+    /// <summary>Passport numbers are encrypted at rest with this purpose string (keys in the Data Protection key ring).</summary>
+    private IDataProtector Passports => dp.CreateProtector("Consultants.Passport.v1");
+
     /// <summary>Consultants in your view. <paramref name="scope"/> narrows to mine/team; <paramref name="status"/> and <paramref name="q"/> filter.</summary>
     [HttpGet, RequirePerm("bench.view")]
     public async Task<List<ConsultantDto>> List([FromQuery] string? scope, [FromQuery] string? status, [FromQuery] string? q)
     {
-        var list = await data.ConsultantsAsync(scope);
+        // Sourced leads (status "Lead") only show when asked for explicitly; the bench views never mix them in.
+        var list = await data.ConsultantsAsync(scope, leadsOnly: string.Equals(status, "Lead", StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrWhiteSpace(status)) list = list.Where(c => c.Status.Equals(status, StringComparison.OrdinalIgnoreCase)).ToList();
         if (!string.IsNullOrWhiteSpace(q))
             list = list.Where(c => $"{c.Name} {c.Title} {c.Location} {c.Visa} {c.OwnerName} {string.Join(' ', c.Skills)}".Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -34,13 +39,71 @@ public sealed class ConsultantsController(AppDbContext db, DataService data, ICu
             .Check(!string.IsNullOrWhiteSpace(c.Name), "name", "Full name is required")
             .Check(string.IsNullOrWhiteSpace(c.Email) || Validator.IsEmail(c.Email), "email", "Enter a valid email address")
             .Check(string.IsNullOrWhiteSpace(c.Phone) || c.Phone.Count(char.IsDigit) >= 10, "phone", "Phone needs at least 10 digits")
-            .Check(c.Rate is >= 1 and <= 500, "rate", "Enter a pay rate between $1 and $500/hr")
+            .Check(c.Rate is >= 1 and <= 500 || (c.Status == "Lead" && c.Rate == 0), "rate", "Enter a pay rate between $1 and $500/hr")
             .Check(c.Exp is >= 0 and <= 60, "exp", "Experience must be 0–60 years")
             .Check((c.Skills?.Count(s => !string.IsNullOrWhiteSpace(s)) ?? 0) > 0, "skills", "Add at least one skill")
             .Check(string.IsNullOrEmpty(c.Visa) || Domain.Visas.Contains(c.Visa), "visa", "Choose a valid visa status")
             .Check(string.IsNullOrEmpty(c.Status) || Domain.ConsultantStatuses.Contains(c.Status), "status", "Choose a valid status")
             .Check((c.Summary?.Length ?? 0) <= 600, "summary", "Keep the summary under 600 characters")
+            .Check(string.IsNullOrWhiteSpace(c.LinkedInUrl) || LinkedIn.ProfileUrl(c.LinkedInUrl) != null, "linkedInUrl", "Enter a LinkedIn profile link, e.g. https://www.linkedin.com/in/name")
+            .Check(string.IsNullOrWhiteSpace(c.PassportNumber) || System.Text.RegularExpressions.Regex.IsMatch(c.PassportNumber.Replace(" ", ""), "^[A-Za-z0-9]{6,12}$"),
+                   "passportNumber", "Passport number should be 6–12 letters and digits")
+            .Check(c.VisaValidUntil is null || c.VisaValidUntil.Value.Year is >= 2000 and <= 2100, "visaValidUntil", "Enter a valid date")
+            .Check(c.UsExp is null || (c.UsExp >= 0 && c.UsExp <= c.Exp), "usExp", "US experience can't be more than total experience")
+            .Check((c.Availability?.Length ?? 0) <= 60, "availability", "Keep availability under 60 characters")
+            .Check((c.PreferredLocations?.Length ?? 0) <= 200, "preferredLocations", "Keep preferred locations under 200 characters")
+            .Check((c.Education?.Length ?? 0) <= 300, "education", "Keep education under 300 characters")
+            .Check((c.Certifications?.Length ?? 0) <= 500, "certifications", "Keep certifications under 500 characters")
             .ThrowIfInvalid();
+    }
+
+    /// <summary>Copies the vendor-submission details; encrypts a new passport number, keeps the old one when none is given.</summary>
+    private void ApplyDetails(Consultant e, ConsultantInput c)
+    {
+        static string? T(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+        e.LinkedInUrl = LinkedIn.ProfileUrl(c.LinkedInUrl);
+        e.VisaValidUntil = c.VisaValidUntil is { } d ? DateTime.SpecifyKind(d.Date, DateTimeKind.Utc) : null;   // a date, not a moment: no time-zone shift
+        e.Availability = T(c.Availability);
+        e.PreferredLocations = T(c.PreferredLocations);
+        e.Education = T(c.Education);
+        e.Certifications = T(c.Certifications);
+        e.UsExperienceYears = c.UsExp is int us ? (byte)us : null;
+        if (c.ClearPassport) { e.PassportProtected = null; e.PassportLast4 = null; }
+        else if (T(c.PassportNumber)?.Replace(" ", "").ToUpperInvariant() is { } pp)
+        {
+            e.PassportProtected = Passports.Protect(pp);
+            e.PassportLast4 = pp[^4..];
+        }
+    }
+
+    /// <summary>409 when another consultant (in any team) already has this LinkedIn profile.</summary>
+    private async Task EnsureLinkedInFreeAsync(string? url, int? exceptId)
+    {
+        var norm = LinkedIn.ProfileUrl(url);
+        if (norm is null) return;
+        var other = await db.Consultants.IgnoreQueryFilters().Where(x => x.LinkedInUrl == norm && x.ConsultantId != exceptId && x.Status != "Inactive")
+            .Select(x => new { x.FullName, Owner = x.Owner.FullName }).FirstOrDefaultAsync();
+        if (other != null)
+            throw new AppException(409, "DUPLICATE_CONSULTANT", "LinkedIn profile already used", $"{other.FullName} (owner: {other.Owner}) already has this LinkedIn profile.")
+            { Errors = new Dictionary<string, string[]> { ["linkedInUrl"] = ["Another consultant already has this LinkedIn profile"] } };
+    }
+
+    /// <summary>The full passport number, for filling in a vendor submission. Needs edit rights; every view is audited.</summary>
+    [HttpGet("{id:int}/passport"), RequirePerm("bench.edit")]
+    public async Task<object> Passport(int id)
+    {
+        var c = await db.Consultants.AsNoTracking().Where(x => x.ConsultantId == id && x.Status != "Inactive")
+            .Select(x => new { x.FullName, x.PassportProtected }).FirstOrDefaultAsync() ?? throw AppException.NotFound("Consultant");
+        if (c.PassportProtected is null) throw AppException.NotFound("Passport number");
+        string number;
+        try { number = Passports.Unprotect(c.PassportProtected); }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            throw AppException.Conflict("PASSPORT_UNREADABLE", "Passport number can't be read",
+                "The encryption keys changed since it was saved. Enter the passport number again.");
+        }
+        await audit.LogAsync("PASSPORT_VIEW", $"Viewed the passport number of {c.FullName}", "Consultant", id);
+        return new { passportNumber = number };
     }
 
     private static void Apply(Consultant e, ConsultantInput c, int owner)
@@ -77,8 +140,10 @@ public sealed class ConsultantsController(AppDbContext db, DataService data, ICu
             await data.EnsureCanAssignOwnerAsync(owner);
         }
 
+        await EnsureLinkedInFreeAsync(input.LinkedInUrl, null);
         var entity = new Consultant();
         Apply(entity, input, owner);
+        ApplyDetails(entity, input);
         db.Consultants.Add(entity);
         try { await db.SaveChangesAsync(); }
         catch (DbUpdateException e) when (SqlErrors.IsDuplicate(e)) { throw DuplicateEmail(); }
@@ -116,7 +181,9 @@ public sealed class ConsultantsController(AppDbContext db, DataService data, ICu
             try { db.Entry(entity).Property(c => c.RowVer).OriginalValue = Convert.FromBase64String(input.RowVersion); }
             catch (FormatException) { throw AppException.Bad("VALIDATION", "Invalid version", "Reload the page and try again."); }
         }
+        await EnsureLinkedInFreeAsync(input.LinkedInUrl, id);
         Apply(entity, input, owner);
+        ApplyDetails(entity, input);
         try { await db.SaveChangesAsync(); }   // DbUpdateConcurrencyException → 409 "Changed by someone else"
         catch (DbUpdateException e) when (SqlErrors.IsDuplicate(e)) { throw DuplicateEmail(); }
 
