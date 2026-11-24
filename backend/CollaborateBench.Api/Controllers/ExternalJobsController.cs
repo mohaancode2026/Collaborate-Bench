@@ -23,15 +23,18 @@ public sealed class ExternalJobsController(AppDbContext db, DataService data, Jo
     {
         var o = feed.Options;
         var last = await db.ExternalJobSearches.Where(s => s.Succeeded && !s.CacheHit).MaxAsync(s => (DateTime?)s.CreatedUtc);
-        return new JobFeedStatus(o.Configured, o.Provider, await feed.CallsTodayAsync(), o.DailyCallLimit, o.AutoRefreshHours, last,
-            await db.ExternalJobs.CountAsync(j => !j.IsHidden));
+        return new JobFeedStatus(o.Configured, o.SourceLabel, await feed.CallsTodayAsync(), o.DailyCallLimit, o.AutoRefreshHours, last,
+            await db.ExternalJobs.CountAsync(j => !j.IsHidden), o.DiceEnabled, o.JSearchConfigured);
     }
 
     /// <summary>Saved jobs (all recent ones, or one search's results), each with the best consultants in the user's view.</summary>
+    /// <param name="board">"dice", "indeed" or "linkedin": only jobs from that job board.</param>
     [HttpGet, RequirePerm("board.view")]
     public async Task<List<ExternalJobDto>> List([FromQuery] int? searchId, [FromQuery] string? q, [FromQuery] int? consultantId,
-        [FromQuery] bool remoteOnly = false, [FromQuery] bool linkedIn = false, [FromQuery] int? minScore = null, [FromQuery] bool hidden = false, [FromQuery] string? scope = null)
+        [FromQuery] bool remoteOnly = false, [FromQuery] bool linkedIn = false, [FromQuery] int? minScore = null, [FromQuery] bool hidden = false, [FromQuery] string? scope = null,
+        [FromQuery] string? board = null)
     {
+        if (linkedIn) board ??= "linkedin";
         var jobs = db.ExternalJobs.AsNoTracking().Where(j => j.IsHidden == hidden);
         if (searchId is int sid)
         {
@@ -45,7 +48,7 @@ public sealed class ExternalJobsController(AppDbContext db, DataService data, Jo
         }
         if (remoteOnly) jobs = jobs.Where(j => j.IsRemote);
         IEnumerable<ExternalJob> list = await jobs.OrderByDescending(j => j.LastSeenUtc).Take(300).ToListAsync();
-        if (linkedIn) list = list.Where(JobText.OnLinkedIn);
+        if (board is { Length: > 0 } b) list = list.Where(j => JobText.OnBoard(j, b));
         if (!string.IsNullOrWhiteSpace(q))
             list = list.Where(j => $"{j.Title} {j.Company} {j.Location} {j.Publisher} {string.Join(' ', j.Skills)}".Contains(q.Trim(), StringComparison.OrdinalIgnoreCase));
         var rows = await ScoreAsync(list.ToList(), consultantId, scope, 3);
@@ -81,7 +84,7 @@ public sealed class ExternalJobsController(AppDbContext db, DataService data, Jo
         var (search, added) = await feed.SearchAsync(query, location, remote, JobFeedService.NormalizeDate(input.DatePosted), input.ContractOnly,
             me.RequiredId, false, ct);
         if (!search.CacheHit)
-            await audit.LogAsync("JOBFEED_SEARCH", $"Searched {feed.Options.Provider} for \"{query}\"{(location != null ? $" in {location}" : "")}{(remote ? " (remote)" : "")}: {search.ResultCount} jobs, {added} new");
+            await audit.LogAsync("JOBFEED_SEARCH", $"Searched {search.Provider.Replace("+", " and ")} for \"{query}\"{(location != null ? $" in {location}" : "")}{(remote ? " (remote)" : "")}: {search.ResultCount} jobs, {added} new");
 
         var ids = search.JobIds;
         var jobs = ids.Count == 0 ? [] : await db.ExternalJobs.AsNoTracking().Where(j => ids.Contains(j.ExternalJobId) && !j.IsHidden).ToListAsync(ct);

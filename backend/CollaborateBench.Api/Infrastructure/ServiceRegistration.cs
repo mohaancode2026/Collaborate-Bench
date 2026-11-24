@@ -84,6 +84,9 @@ public static class ServiceRegistration
         // External job search (JSearch on RapidAPI). Off until JobFeed:RapidApiKey is set.
         services.Configure<JobFeedOptions>(cfg.GetSection("JobFeed"));
         services.AddScoped<JSearchClient>();
+        services.AddScoped<DiceClient>();
+        // Dice's public MCP server. A plain product name in the User-Agent; Dice tags its links with it as utm_source.
+        services.AddHttpClient("dice", c => { c.Timeout = TimeSpan.FromSeconds(30); c.DefaultRequestHeaders.UserAgent.ParseAdd("CollaborateBench/1.0"); });
         services.AddScoped<JobFeedService>();
         services.AddHostedService<JobFeedRefresher>();
         services.AddHttpClient("jobfeed", (sp, c) =>
@@ -96,6 +99,7 @@ public static class ServiceRegistration
         services.Configure<MicrosoftOptions>(cfg.GetSection("Microsoft"));
         services.AddScoped<MicrosoftAuth>();
         services.AddScoped<MailSender>();
+        services.AddScoped<VendorDiscovery>();
         services.AddSingleton<MailSync>();
         services.AddHostedService(sp => sp.GetRequiredService<MailSync>());
         services.AddHttpClient("microsoft", c => c.Timeout = TimeSpan.FromSeconds(60));

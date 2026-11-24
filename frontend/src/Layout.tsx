@@ -35,6 +35,8 @@ export default function Layout() {
   const autopilotWaiting = useAutopilotCount();
 
   useEffect(() => { setSide(false); setMenu(false); }, [loc.pathname]);
+  // Keep the current page's link visible when the menu is taller than the screen.
+  useEffect(() => { document.querySelector('.side .nav a.on')?.scrollIntoView({ block: 'nearest' }); }, [loc.pathname]);
   useEffect(() => { api<{ claude: boolean }>('/ai/status').then(setAi).catch(() => setAi(null)); }, []);
   if (!user) return null;
 

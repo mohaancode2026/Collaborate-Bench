@@ -3,6 +3,9 @@ namespace CollaborateBench.Api.Models;
 
 public sealed record VendorDto(int Id, string Name, List<string> Domains, bool Active, int Sent, int Received, DateTime? LastContactUtc, int AwaitingReply);
 public sealed record VendorInput(string? Name, List<string>? Domains, bool? Active);
+public sealed record VendorBatchInput(List<VendorInput>? Vendors);
+public sealed record VendorBatchError(string Name, string Domains, string Error);
+public sealed record VendorBatchResult(List<VendorDto> Created, List<VendorBatchError> Failed);
 public sealed record VendorEmailDto(int Id, DateTime SentUtc, string Direction, int VendorId, string Vendor, string FromAddress, string? FromName,
     string ToAddresses, string Subject, string Preview, List<string> Attachments, int? ConsultantId, string? ConsultantName,
     int UserId, string UserName, bool AwaitingReply);

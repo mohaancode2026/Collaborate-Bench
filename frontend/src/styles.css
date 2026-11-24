@@ -80,13 +80,20 @@ input,select,textarea{font:inherit;color:inherit}
 /* ---------- App shell ---------- */
 #app{display:flex;min-height:100vh}
 .side{width:248px;flex:none;background:var(--grad);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;padding:18px 14px;z-index:40;transition:transform .25s}
-.side .brand{padding:4px 8px 22px}
+@supports (height:100dvh){.side{height:100dvh}}   /* mobile browsers: don't hide the bottom under the URL bar */
+.side .brand{padding:4px 8px 22px;flex:none}
+/* The menu is the scrolling part; brand and footer stay put. min-height:0 lets it shrink below its content. */
+.side .nav{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin:0 -6px;padding:0 6px 8px;
+  scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.25) transparent}
+.side .nav::-webkit-scrollbar{width:6px}
+.side .nav::-webkit-scrollbar-thumb{background:rgba(255,255,255,.22);border-radius:99px}
+.side .nav::-webkit-scrollbar-track{background:transparent}
 .nav-g{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;opacity:.5;padding:14px 10px 6px;font-weight:700}
 .nav a{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:10px;font-weight:500;opacity:.82;margin-bottom:2px;transition:.15s}
 .nav a:hover{background:rgba(255,255,255,.08);opacity:1}
 .nav a.on{background:rgba(255,255,255,.14);opacity:1;box-shadow:inset 3px 0 0 var(--accent)}
 .nav a .cnt{margin-left:auto;font-size:11px;background:rgba(255,255,255,.16);padding:1px 8px;border-radius:99px}
-.side-foot{margin-top:auto;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:12px;font-size:12.5px}
+.side-foot{flex:none;margin-top:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:12px;font-size:12.5px}
 .ai-stat{display:flex;align-items:center;gap:8px;font-weight:600}
 .ai-stat i{width:8px;height:8px;border-radius:50%;background:var(--warn)}
 .ai-stat.live i{background:var(--ok);box-shadow:0 0 0 3px rgba(16,185,129,.3)}
@@ -349,6 +356,26 @@ textarea.inp{resize:vertical;min-height:110px}
 .brief{border-color:#bfdbfe}.brief .card-h{background:linear-gradient(90deg,var(--primary-50),#fff)}.brief .card-h h3{display:flex;align-items:center;gap:8px}
 #briefTxt.jd{margin-bottom:10px;background:var(--primary-50);border-color:#bfdbfe}
 .kc.stale{border-left:3px solid var(--warn)}
+/* Find vendors in Outlook */
+.disc-grid td{vertical-align:top}
+.disc-grid tr.on td{background:var(--primary-50)}
+.disc-grid small{display:block;font-size:12px;margin-top:3px}
+.disc-grid .disc-subj{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disc-grid thead th{position:sticky;top:0;background:#fff;z-index:1}
+/* Submissions grid */
+.sub-grid th{white-space:nowrap}
+.sub-grid th.num,.sub-grid td.num{text-align:right}
+.th-sort{display:inline-flex;align-items:center;gap:5px;font:inherit;color:inherit;text-transform:inherit;letter-spacing:inherit;padding:0;background:none;border:0;cursor:pointer}
+.th-sort span{font-size:9px;opacity:.35}
+.th-sort.on{color:var(--ink)}
+.th-sort.on span{opacity:1;color:var(--primary)}
+.sub-grid tr.stale td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
+.sub-grid .sg-title{display:block;font-size:13.5px}
+.sub-grid small{display:block;font-size:12px}
+.stage-sel{border:0;cursor:pointer;font:inherit;font-size:12px;font-weight:600;padding:3px 6px;appearance:auto}
+.sg-stale{display:inline-flex;align-items:center;gap:6px;cursor:pointer;padding:6px 10px;margin:0}
+.sg-stale input{margin:0}
+.sg-note{margin-left:6px;cursor:help}
 .tree,.tree ul{list-style:none;padding-left:0}
 .tree ul{margin-left:18px;padding-left:16px;border-left:2px dashed #cbd5e1}
 .tnode{display:flex;gap:12px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;margin:8px 0;background:#fff;flex-wrap:wrap}

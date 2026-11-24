@@ -31,6 +31,11 @@ public sealed class MicrosoftOptions
     public string AppUrl { get; set; } = "http://localhost:5173";
     /// <summary>Your own email domains. Mail from these counts as "sent to the vendor". The mailbox's own domain is always included.</summary>
     public string[] CompanyDomains { get; set; } = [];
+    /// <summary>Role given to a company account the first time it signs in with Microsoft and isn't in Team &amp; Access yet.
+    /// Empty turns auto sign-up off (unknown accounts get "Account not set up"). Only works with a specific TenantId, never for guests.</summary>
+    public string AutoProvisionRole { get; set; } = "Recruiter";
+    /// <summary>True when TenantId names one organisation. "common" / "organizations" / "consumers" would let any Microsoft account in.</summary>
+    public bool SingleTenant => !string.IsNullOrWhiteSpace(TenantId) && TenantId.Trim().ToLowerInvariant() is not ("common" or "organizations" or "consumers");
     public int MailSyncMinutes { get; set; } = 10;
     public int FirstSyncDays { get; set; } = 30;
     public int MaxMessagesPerSync { get; set; } = 500;
@@ -111,16 +116,18 @@ public sealed class MicrosoftAuth(IHttpClientFactory http, IOptions<MicrosoftOpt
         return new MsTokens(j["access_token"]!.GetValue<string>(), j["refresh_token"]?.GetValue<string>(), j["scope"]?.GetValue<string>(), expires);
     }
 
-    /// <summary>The signed-in Microsoft account's email address and name.</summary>
-    public async Task<(string Email, string Name)> MeAsync(string accessToken, CancellationToken ct)
+    /// <summary>The signed-in Microsoft account's mail address, sign-in name (UPN) and display name, lowercased.
+    /// Email is the mail address, or the UPN when the account has none; the two can differ (aliases).</summary>
+    public async Task<(string Email, string Upn, string Name)> MeAsync(string accessToken, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, $"{Graph}/v1.0/me?$select=mail,userPrincipalName,displayName");
         req.Headers.Authorization = new("Bearer", accessToken);
         using var res = await http.CreateClient("microsoft").SendAsync(req, ct);
         if (!res.IsSuccessStatusCode) throw new AppException(502, "MICROSOFT_ERROR", "Microsoft sign-in failed", "Couldn't read your Microsoft profile. Try again.");
         var j = JsonNode.Parse(await res.Content.ReadAsStringAsync(ct));
-        var email = j?["mail"]?.GetValue<string>() ?? j?["userPrincipalName"]?.GetValue<string>() ?? "";
-        return (email.Trim().ToLowerInvariant(), j?["displayName"]?.GetValue<string>() ?? "");
+        var upn = (j?["userPrincipalName"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant();
+        var mail = (j?["mail"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant();
+        return (mail.Length > 0 ? mail : upn, upn, j?["displayName"]?.GetValue<string>() ?? "");
     }
 }
 
@@ -344,13 +351,20 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
         return new SyncResult(0, 0, status, error);
     }
 
-    private async Task<List<JsonNode>> ReadMessagesAsync(string accessToken, DateTime since, int max, CancellationToken ct)
+    /// <summary>Sender, recipients, subject and first lines of every message since <paramref name="since"/> (no attachments),
+    /// for scanning a mailbox for vendors. Throws AppException MAIL_RECONNECT / MAIL_ERROR like the sync.</summary>
+    public Task<List<JsonNode>> ReadHeadersAsync(string accessToken, DateTime since, int max, CancellationToken ct) =>
+        ReadMessagesAsync(accessToken, since, max, ct, headersOnly: true);
+
+    private async Task<List<JsonNode>> ReadMessagesAsync(string accessToken, DateTime since, int max, CancellationToken ct, bool headersOnly = false)
     {
         // /me/messages covers every folder, including Sent Items. Oldest first so the watermark only moves forward.
         var url = $"{options.Value.GraphUrl.TrimEnd('/')}/v1.0/me/messages"
-                  + "?$select=id,conversationId,subject,bodyPreview,from,toRecipients,ccRecipients,sentDateTime,receivedDateTime,isDraft,hasAttachments"
-                  + "&$expand=attachments($select=name)"
-                  + $"&$filter=receivedDateTime ge {since:yyyy-MM-ddTHH:mm:ssZ}&$orderby=receivedDateTime asc&$top=50";
+                  + (headersOnly
+                      ? "?$select=id,subject,bodyPreview,from,toRecipients,ccRecipients,receivedDateTime,isDraft"
+                      : "?$select=id,conversationId,subject,bodyPreview,from,toRecipients,ccRecipients,sentDateTime,receivedDateTime,isDraft,hasAttachments"
+                        + "&$expand=attachments($select=name)")
+                  + $"&$filter=receivedDateTime ge {since:yyyy-MM-ddTHH:mm:ssZ}&$orderby=receivedDateTime asc&$top={(headersOnly ? 100 : 50)}";
         var list = new List<JsonNode>();
         var client = http.CreateClient("microsoft");
         while (url != null && list.Count < max)

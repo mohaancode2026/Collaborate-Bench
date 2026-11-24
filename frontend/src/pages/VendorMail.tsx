@@ -26,6 +26,7 @@ export default function VendorMail() {
   const [edit, setEdit] = useState<VendorInfo | 'new' | null>(null);
   const [newName, setNewName] = useState('');
   const [compose, setCompose] = useState<{ replyTo?: VendorEmail; to?: string; followUp?: boolean; consultantId?: number | null } | null>(null);
+  const [discover, setDiscover] = useState(false);
   const team = user?.dataScope !== 'OWN' && scope !== 'mine';
 
   const loadConn = useCallback(() => { api<MailConnection>('/mail/connection').then(setConn).catch(onError); }, [onError]);
@@ -85,7 +86,10 @@ export default function VendorMail() {
       {conn && <ConnectionCard conn={conn} syncing={syncing} onConnect={connect} onSync={syncNow} onDisconnect={disconnect} />}
       {conn?.configured && conn.vendors === 0 && (
         <Alert type="warning" title="No vendors set up yet">
-          Emails are only tracked for vendors in the vendor list. {can('vendors.manage') ? 'Add your vendors and their email domains under "Vendor list".' : 'Ask your Team Lead to add vendors and their email domains.'}
+          Emails are only tracked for vendors in the vendor list. {can('vendors.manage') ? <>Let the app find them in your Outlook, or add them under "Vendor list".
+            <button className="btn btn-sm btn-primary" style={{ marginLeft: 8 }} onClick={() => setDiscover(true)}>✦ Find vendors in Outlook</button></>
+            : <>Ask your Team Lead to add vendors and their email domains.{conn.connected && <> You can see which vendors you work with first.
+              <button className="btn btn-sm btn-primary" style={{ marginLeft: 8 }} onClick={() => setDiscover(true)}>✦ Vendors in my Outlook</button></>}</>}
         </Alert>)}
 
       <div className="grid g4" style={{ margin: '16px 0' }}>
@@ -108,7 +112,10 @@ export default function VendorMail() {
               {tab === 'activity' && <select className="inp" style={{ width: 'auto', padding: '7px 10px' }} value={f.direction} onChange={e => setF({ ...f, direction: e.target.value })} aria-label="Direction">
                 <option value="">Sent and received</option><option value="Out">Sent to vendor</option><option value="In">From vendor</option></select>}
             </div>)}
-          {tab === 'directory' && can('vendors.manage') && <button className="btn btn-sm btn-primary" onClick={() => { setNewName(''); setEdit('new'); }}>+ Add vendor</button>}
+          {tab === 'directory' && (can('vendors.manage') || conn?.connected) && <div className="flex">
+            {conn?.configured && (can('vendors.manage') || conn.connected) &&
+              <button className="btn btn-sm btn-outline" onClick={() => setDiscover(true)}>{can('vendors.manage') ? '✦ Find vendors in Outlook' : '✦ Vendors in my Outlook'}</button>}
+            {can('vendors.manage') && <button className="btn btn-sm btn-primary" onClick={() => { setNewName(''); setEdit('new'); }}>+ Add vendor</button>}</div>}
         </div>
 
         {tab === 'activity' && <EmailTable emails={emails} team={team} awaiting={false} meId={user?.id}
@@ -153,6 +160,11 @@ export default function VendorMail() {
         onSent={() => { setTimeout(() => { loadSummary(); loadEmails(); loadConn(); remindersChanged(); window.dispatchEvent(new Event('cbs:reminders-reload')); }, 5000); }} />}
       {remind && <RemindDialog email={remind} onClose={() => setRemind(null)} />}
       {edit && <VendorDialog vendor={edit === 'new' ? null : edit} initialName={newName} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); loadSummary(); loadConn(); }} />}
+      {discover && <DiscoverDialog canAdd={can('vendors.manage')} ownOnly={user?.dataScope === 'OWN'} onClose={() => setDiscover(false)} onAdded={() => {
+        setDiscover(false); setTab('directory'); loadSummary(); loadConn();
+        // The re-check of the mailboxes runs in the background; refresh the numbers once it has had time to finish.
+        setTimeout(() => { loadSummary(); loadEmails(); }, 20_000);
+      }} />}
     </>
   );
 }
@@ -216,6 +228,123 @@ function Suggestions({ onPick, refreshKey }: { onPick: (name: string) => void; r
       <span className="muted" style={{ fontSize: 13 }}>Vendors from your requirements, not in the list yet:</span>
       {names.slice(0, 12).map(n => <button key={n} className="skchip" onClick={() => onPick(n)}>+ {n}</button>)}
     </div>);
+}
+
+interface Discovered {
+  key: string; isAddress: boolean; likelyConsultant: boolean; suggestedName: string; score: number; received: number; sent: number; mailboxes: number;
+  lastSeenUtc: string; contacts: { address: string; name?: string | null; emails: number }[]; signals: string[]; sampleSubjects: string[];
+}
+interface DiscoveryResult { mailboxes: number; messagesRead: number; days: number; vendors: Discovered[]; problems: string[] }
+interface BatchResult { created: { id: number; name: string }[]; failed: { name: string; domains: string; error: string }[] }
+
+/** Strong matches are ticked to start with; the rest are shown so nothing is missed. */
+const PRESELECT = 50;
+
+/**
+ * @param canAdd  Team Leads and above pick vendors and add them; Recruiters get a read-only view.
+ * @param ownOnly The caller can only scan their own mailbox (Recruiters), so the "Only my mailbox" switch is hidden.
+ */
+function DiscoverDialog({ canAdd, ownOnly, onClose, onAdded }: { canAdd: boolean; ownOnly: boolean; onClose: () => void; onAdded: () => void }) {
+  const notify = useToast();
+  const onError = useErrorHandler();
+  const [days, setDays] = useState(30);
+  const [mine, setMine] = useState(ownOnly);
+  const [res, setRes] = useState<DiscoveryResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [q, setQ] = useState('');
+  const [kind, setKind] = useState<'company' | 'personal'>('company');
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<BatchResult['failed']>([]);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true); setFailed([]);
+    api<DiscoveryResult>('/vendors/discover', { query: { days, mine: mine ? 'true' : undefined } })
+      .then(r => {
+        if (!live) return;
+        setRes(r);
+        setPicked(Object.fromEntries(r.vendors.map(v => [v.key, v.score >= PRESELECT && !v.isAddress])));
+        setNames(Object.fromEntries(r.vendors.map(v => [v.key, v.suggestedName])));
+      })
+      .catch(e => { if (live) { setRes(null); onError(e); } })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [days, mine, onError]);
+
+  const needle = q.trim().toLowerCase();
+  const companies = (res?.vendors ?? []).filter(v => !v.isAddress).length;
+  const personal = (res?.vendors ?? []).length - companies;
+  const rows = (res?.vendors ?? []).filter(v => v.isAddress === (kind === 'personal')).filter(v => !needle || v.key.includes(needle) || (names[v.key] ?? '').toLowerCase().includes(needle)
+    || v.contacts.some(c => (c.name ?? '').toLowerCase().includes(needle)));
+  const chosen = (res?.vendors ?? []).filter(v => picked[v.key]);
+  const allShownPicked = rows.length > 0 && rows.every(v => picked[v.key]);
+
+  const add = async () => {
+    setBusy(true); setFailed([]);
+    try {
+      const r = await api<BatchResult>('/vendors/batch', { method: 'POST', body: { vendors: chosen.map(v => ({ name: (names[v.key] ?? v.suggestedName).trim(), domains: [v.key] })) } });
+      if (r.created.length) notify('success', `${r.created.length} vendor${r.created.length === 1 ? '' : 's'} added`,
+        `Connected mailboxes are being re-checked for the last 30 days of emails with ${r.created.length === 1 ? 'it' : 'them'}.`);
+      if (r.failed.length) { setFailed(r.failed); setPicked(p => Object.fromEntries(Object.entries(p).filter(([k]) => r.failed.some(f => f.domains === k)))); }
+      else onAdded();
+    } catch (e) { onError(e); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={canAdd ? 'Find vendors in Outlook' : 'Vendors in my Outlook'} wide onClose={onClose}
+      footer={canAdd ? <>
+        <span className="muted" style={{ marginRight: 'auto', fontSize: 13 }}>{chosen.length} selected</span>
+        <button className="btn btn-outline" onClick={onClose}>{failed.length ? 'Done' : 'Cancel'}</button>
+        <button className="btn btn-primary" onClick={add} disabled={busy || loading || chosen.length === 0}>{busy ? <Spinner /> : `Add ${chosen.length || ''} vendor${chosen.length === 1 ? '' : 's'}`}</button></>
+        : <button className="btn btn-primary" onClick={onClose}>Close</button>}>
+      <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+        {canAdd
+          ? `Outside companies ${mine ? 'you email' : 'your team emails'} about requirements, rates, C2C, RTR and submissions. Only senders, recipients, subjects and first lines are read, and nothing is saved until you add vendors.`
+          : 'Vendors you email about requirements, rates, C2C, RTR and submissions, found in your own mailbox. Only senders, recipients, subjects and first lines are read, and nothing is saved.'}
+      </p>
+      {!canAdd && res && res.vendors.length > 0 && <Alert type="info" title="These aren't tracked yet">
+        Only vendors in the vendor list are tracked. Ask your Team Lead to add the ones you work with, using “Find vendors in Outlook”.</Alert>}
+      <div className="flex" style={{ margin: '10px 0' }}>
+        <div className="tabs" aria-label="Kind">
+          <button className={kind === 'company' ? 'on' : ''} onClick={() => setKind('company')}>Companies{res ? ` (${companies})` : ''}</button>
+          <button className={kind === 'personal' ? 'on' : ''} onClick={() => setKind('personal')} title="Recruiters who use Gmail, Yahoo, etc. Only that one address is tracked.">Personal emails{res ? ` (${personal})` : ''}</button>
+        </div>
+        <select className="inp" style={{ width: 'auto', padding: '7px 10px' }} value={days} onChange={e => setDays(Number(e.target.value))} aria-label="Period" disabled={loading}>
+          {[30, 60, 90].map(d => <option key={d} value={d}>Last {d} days</option>)}</select>
+        <input className="inp" style={{ width: 220, padding: '7px 10px' }} placeholder="Filter by name or domain" value={q} onChange={e => setQ(e.target.value)} />
+        {!ownOnly && <label className="check" style={{ margin: 0 }}><input type="checkbox" checked={mine} disabled={loading} onChange={e => setMine(e.target.checked)} /><span>Only my mailbox</span></label>}
+        {res && !loading && <span className="muted" style={{ fontSize: 12.5 }}>Read {res.messagesRead.toLocaleString()} emails from {res.mailboxes} mailbox{res.mailboxes === 1 ? '' : 'es'}.</span>}
+      </div>
+      {res?.problems.length ? <Alert type="warning" title="Some mailboxes couldn't be read">{res.problems.join(' · ')}</Alert> : null}
+      {failed.length > 0 && <Alert type="error" title={`${failed.length} couldn't be added`}>{failed.map(f => `${f.name} (${f.domains}): ${f.error}`).join(' · ')}</Alert>}
+
+      {loading ? <Empty><Spinner dark /> Reading mailboxes… this can take a minute or two.</Empty>
+        : !res || res.vendors.length === 0 ? <Empty>No new vendors found in the last {days} days{canAdd ? '. Try a longer period, or add vendors by hand.' : '. Vendors already in the vendor list aren\'t shown here.'}</Empty>
+        : <div className="tw" style={{ maxHeight: '55vh', overflowY: 'auto' }}><table className="disc-grid"><thead><tr>
+            {canAdd && <th style={{ width: 32 }}><input type="checkbox" aria-label="Select all shown" checked={allShownPicked}
+              onChange={e => setPicked(p => ({ ...p, ...Object.fromEntries(rows.map(v => [v.key, e.target.checked])) }))} /></th>}
+            <th>Vendor name</th><th>Domain / address</th><th>Emails</th><th>Why it looks like a vendor</th><th>Match</th></tr></thead><tbody>
+          {rows.map(v => (
+            <tr key={v.key} className={canAdd && picked[v.key] ? 'on' : undefined}>
+              {canAdd && <td><input type="checkbox" aria-label={`Add ${names[v.key]}`} checked={!!picked[v.key]} onChange={e => setPicked(p => ({ ...p, [v.key]: e.target.checked }))} /></td>}
+              <td style={{ minWidth: 170 }}>{canAdd
+                ? <input className="inp" style={{ padding: '6px 9px' }} aria-label={`Name for ${v.key}`} value={names[v.key] ?? ''} onChange={e => setNames(n => ({ ...n, [v.key]: e.target.value }))} />
+                : <b>{v.suggestedName}</b>}
+                <small className="muted">{v.contacts.slice(0, 2).map(c => c.name || c.address).join(', ')}{v.contacts.length > 2 ? ` +${v.contacts.length - 2}` : ''}</small></td>
+              <td><span className="mono" style={{ fontSize: 12.5 }}>{v.key}</span>
+                {v.likelyConsultant && <div><span className="tag y" title="You mostly write to this address and rarely hear back, which is how consultants look. Add it only if it's a vendor recruiter.">Maybe a consultant</span></div>}</td>
+              <td style={{ whiteSpace: 'nowrap' }}><span title="Received from them">↙ {v.received}</span> · <span title="Sent to them">↗ {v.sent}</span>
+                <small className="muted">{ago(v.lastSeenUtc)}{v.mailboxes > 1 ? ` · ${v.mailboxes} recruiters` : ''}</small></td>
+              <td style={{ minWidth: 220 }}>{v.signals.map(s => <span key={s} className="tag s">{s}</span>)}
+                {v.sampleSubjects[0] && <small className="muted disc-subj" title={v.sampleSubjects.join('\n')}>“{v.sampleSubjects[0]}”</small>}</td>
+              <td><span className={`tag ${v.score >= 70 ? 'g' : v.score >= PRESELECT ? 'c' : 's'}`}>{v.score}</span></td>
+            </tr>))}
+          {rows.length === 0 && <tr><td colSpan={canAdd ? 6 : 5}><Empty>{needle ? `Nothing matches “${q}”.` : kind === 'personal' ? 'No personal-email recruiters found.' : 'No vendor companies found.'}</Empty></td></tr>}
+        </tbody></table></div>}
+    </Modal>);
 }
 
 function VendorDialog({ vendor, initialName, onClose, onSaved }: { vendor: VendorInfo | null; initialName: string; onClose: () => void; onSaved: () => void }) {

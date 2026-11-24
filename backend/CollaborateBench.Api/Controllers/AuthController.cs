@@ -128,23 +128,27 @@ public sealed class AuthController(AppDbContext db, TokenService tokens, AuditSe
         if (!string.IsNullOrEmpty(error) || string.IsNullOrEmpty(code))
             return Redirect(App($"{back}?msError={(error is "access_denied" or "consent_required" ? "cancelled" : "failed")}"));
 
-        MsTokens t; string email;
-        try { t = await ms.RedeemCodeAsync(code, st.Verifier, ct); (email, _) = await ms.MeAsync(t.AccessToken, ct); }
+        MsTokens t; string email, upn, displayName;
+        try { t = await ms.RedeemCodeAsync(code, st.Verifier, ct); (email, upn, displayName) = await ms.MeAsync(t.AccessToken, ct); }
         catch (AppException ex) { log.LogWarning("Microsoft callback failed: {Error}", ex.Message); return Redirect(App($"{back}?msError=failed")); }
 
         if (st.Mode == "connect")
         {
             var uid = st.UserId!.Value;
             if (!await db.Users.AnyAsync(x => x.UserId == uid && x.IsActive, ct)) return Redirect(App("/login?msError=deactivated"));
-            await SaveConnectionAsync(uid, email, t.RefreshToken, t.Scope, ct);
+            if (!await SaveConnectionAsync(uid, email, t.RefreshToken, t.Scope, ct)) return Redirect(App("/vendor-mail?msError=failed"));
             await audit.LogAsync("MAIL_CONNECT", $"Connected Outlook mailbox {email} for vendor email tracking", "User", uid, userId: uid);
             return Redirect(App("/vendor-mail?connected=1"));
         }
 
-        var u = await db.Users.FirstOrDefaultAsync(x => x.Email == email, ct);
+        // The account may be registered under its mail address or its sign-in name (UPN); prefer the mail address.
+        var u = await db.Users.FirstOrDefaultAsync(x => x.Email == email, ct)
+                ?? (upn.Length > 0 && upn != email ? await db.Users.FirstOrDefaultAsync(x => x.Email == upn, ct) : null);
+        var isNew = false;
+        if (u is null && await AutoProvisionAsync(email, upn, displayName, ct) is { } created) { u = created; isNew = true; }
         if (u is null)
         {
-            await audit.LogAsync("LOGIN_FAIL", $"Microsoft sign-in by unregistered account {email}", outcome: "Denied");
+            await audit.LogAsync("LOGIN_FAIL", $"Microsoft sign-in by unregistered account {email}{(upn != email ? $" ({upn})" : "")}", outcome: "Denied");
             return Redirect(App("/login?msError=not_registered"));
         }
         if (!u.IsActive)
@@ -157,30 +161,66 @@ public sealed class AuthController(AppDbContext db, TokenService tokens, AuditSe
         u.LastLoginUtc = DateTime.UtcNow;
         u.FailedLoginCount = 0;
         await db.SaveChangesAsync(ct);
-        await SaveConnectionAsync(u.UserId, email, t.RefreshToken, t.Scope, ct);
+        var mailConnected = await SaveConnectionAsync(u.UserId, email, t.RefreshToken, t.Scope, ct);
 
         // Hand the session to the app with a one-time code (valid 2 minutes) instead of putting a token in the URL.
         var once = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
-        cache.Set($"ms-login:{once}", u.UserId, TimeSpan.FromMinutes(2));
+        cache.Set($"ms-login:{once}", new MsPendingLogin(u.UserId, mailConnected, isNew), TimeSpan.FromMinutes(2));
         return Redirect(App($"/login?ms={once}"));
+    }
+
+    private sealed record MsPendingLogin(int UserId, bool MailConnected, bool NewAccount);
+
+    /// <summary>First Microsoft sign-in by a company account that isn't in Team &amp; Access: creates it with Microsoft:AutoProvisionRole
+    /// (Recruiter by default), no password and no manager, so an admin can assign a Team Lead later.
+    /// Returns null (the caller shows "Account not set up") when auto sign-up is off, the tenant isn't a single organisation,
+    /// the account is a guest, or its domain isn't one of Microsoft:CompanyDomains (when that list is set).</summary>
+    private async Task<User?> AutoProvisionAsync(string email, string upn, string displayName, CancellationToken ct)
+    {
+        var o = ms.Options;
+        var roleName = o.AutoProvisionRole?.Trim();
+        if (string.IsNullOrEmpty(roleName) || !o.SingleTenant || !Validator.IsEmail(email)) return null;
+        if (upn.Contains("#ext#")) return null;   // guest (B2B) account invited from another organisation
+        var domain = email[(email.LastIndexOf('@') + 1)..];
+        if (o.CompanyDomains is { Length: > 0 } doms && !doms.Any(d => domain.Equals(d.Trim().TrimStart('@'), StringComparison.OrdinalIgnoreCase))) return null;
+
+        var role = await db.Roles.AsNoTracking().FirstOrDefaultAsync(r => r.Name == roleName, ct);
+        if (role is null) { log.LogWarning("Microsoft:AutoProvisionRole '{Role}' doesn't exist; not creating {Email}.", roleName, email); return null; }
+
+        var name = string.IsNullOrWhiteSpace(displayName) ? email[..email.IndexOf('@')] : displayName.Trim();
+        var user = new User { Email = email, FullName = name.Length > 100 ? name[..100] : name, RoleId = role.RoleId, PasswordHash = null, MustChangePassword = false };
+        db.Users.Add(user);
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateException e) when (SqlErrors.IsDuplicate(e))
+        {
+            // Two sign-ins at the same moment: the other one created the account.
+            db.Entry(user).State = EntityState.Detached;
+            return await db.Users.FirstOrDefaultAsync(x => x.Email == email, ct);
+        }
+        await db.Database.ExecuteSqlRawAsync("EXEC sec.usp_RebuildHierarchy", ct);
+        await audit.LogAsync("USER_CREATE", $"Created {user.FullName} ({role.Name}) on first Microsoft sign-in", "User", user.UserId, userId: user.UserId);
+        log.LogInformation("Created {Email} as {Role} on first Microsoft sign-in.", email, role.Name);
+        return user;
     }
 
     /// <summary>Swaps the one-time code from the Microsoft callback (valid 2 minutes, single use) for a bearer token.</summary>
     [AllowAnonymous, HttpPost("microsoft/exchange"), EnableRateLimiting("login")]
-    public async Task<LoginResponse> MicrosoftExchange(MsExchangeRequest req)
+    public async Task<MsLoginResponse> MicrosoftExchange(MsExchangeRequest req)
     {
         var key = $"ms-login:{req.Code}";
-        if (string.IsNullOrEmpty(req.Code) || !cache.TryGetValue(key, out int uid))
+        if (string.IsNullOrEmpty(req.Code) || !cache.TryGetValue(key, out MsPendingLogin? pending) || pending is null)
             throw new AppException(401, "MS_CODE_EXPIRED", "Sign-in expired", "That Microsoft sign-in has expired or was already used. Sign in with Microsoft again.");
         cache.Remove(key);
-        var u = await UsersWithDetails().FirstOrDefaultAsync(x => x.UserId == uid && x.IsActive)
+        var u = await UsersWithDetails().FirstOrDefaultAsync(x => x.UserId == pending.UserId && x.IsActive)
                 ?? throw new AppException(403, "ACCOUNT_DEACTIVATED", "Account deactivated", "Your account has been deactivated. Contact your admin.");
-        return await IssueAsync(u, "microsoft", "Signed in with Microsoft");
+        var r = await IssueAsync(u, "microsoft", "Signed in with Microsoft");
+        return new MsLoginResponse(r.Token, r.ExpiresUtc, r.User, pending.MailConnected, pending.NewAccount);
     }
 
-    private async Task SaveConnectionAsync(int userId, string mailbox, string? refreshToken, string? scopes, CancellationToken ct)
+    /// <returns>False when there was no refresh token, so the mailbox couldn't be connected.</returns>
+    private async Task<bool> SaveConnectionAsync(int userId, string mailbox, string? refreshToken, string? scopes, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(refreshToken)) { log.LogWarning("Microsoft returned no refresh token for user {User}; mail tracking not connected.", userId); return; }
+        if (string.IsNullOrEmpty(refreshToken)) { log.LogWarning("Microsoft returned no refresh token for user {User}; mail tracking not connected.", userId); return false; }
         var c = await db.MailConnections.FirstOrDefaultAsync(x => x.UserId == userId, ct);
         if (c is null) db.MailConnections.Add(c = new MailConnection { UserId = userId });
         else if (!c.Mailbox.Equals(mailbox, StringComparison.OrdinalIgnoreCase)) c.SyncedThroughUtc = null;   // different mailbox: start over
@@ -192,6 +232,7 @@ public sealed class AuthController(AppDbContext db, TokenService tokens, AuditSe
         c.LastError = null;
         await db.SaveChangesAsync(ct);
         mailSync.Kick(userId);
+        return true;
     }
 
     /// <summary>The signed-in user with role, data scope and permissions (refreshes the UI after reload).</summary>

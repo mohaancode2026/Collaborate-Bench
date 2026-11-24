@@ -28,6 +28,9 @@ public sealed record LoginResponse(string Token, DateTime ExpiresUtc, UserInfo U
 public sealed record MsStartRequest(string? Mode, string? LoginHint);
 /// <param name="Code">One-time code from the Microsoft callback redirect.</param>
 public sealed record MsExchangeRequest(string? Code);
+/// <param name="MailConnected">False when Microsoft returned no refresh token, so Outlook mail tracking isn't connected.</param>
+/// <param name="NewAccount">True when this sign-in created the account (first Microsoft sign-in, Microsoft:AutoProvisionRole).</param>
+public sealed record MsLoginResponse(string Token, DateTime ExpiresUtc, UserInfo User, bool MailConnected, bool NewAccount);
 
 public sealed class TeamMemberDto
 {
@@ -244,4 +247,7 @@ public sealed record ExternalSearchResult(int SearchId, string Query, string? Lo
 public sealed record ExternalImportInput(decimal BillRate, string? Type, string? Vendor, string? Tier, List<string>? Skills, List<string>? Visas);
 public sealed record ExternalApplyInput(int ConsultantId, decimal SubmitRate, decimal PayRate, bool RtrSigned, string? Notes,
     decimal BillRate, string? Type, string? Vendor, string? Tier, List<string>? Skills, List<string>? Visas);
-public sealed record JobFeedStatus(bool Configured, string Provider, int CallsToday, int DailyLimit, int AutoRefreshHours, DateTime? LastSearchUtc, int StoredJobs);
+/// <param name="Provider">The sources searched, for display ("Dice and JSearch (Indeed, LinkedIn, Glassdoor)").</param>
+/// <param name="CallsToday">JSearch calls today, against <paramref name="DailyLimit"/>. Dice is free and not counted.</param>
+public sealed record JobFeedStatus(bool Configured, string Provider, int CallsToday, int DailyLimit, int AutoRefreshHours, DateTime? LastSearchUtc, int StoredJobs,
+    bool Dice = false, bool Indeed = false);

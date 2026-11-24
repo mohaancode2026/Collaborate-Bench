@@ -42,7 +42,7 @@ export default function ExternalJobs() {
   const [searching, setSearching] = useState(false);
   const [view, setView] = useState<View>({});
   const [list, setList] = useState<ExternalJob[] | null>(null);
-  const [filter, setFilter] = useState({ q: '', minScore: '', hidden: false, linkedIn: false });
+  const [filter, setFilter] = useState({ q: '', minScore: '', hidden: false, board: '' });
   const [sel, setSel] = useState<number | null>(null);
   const [best, setBest] = useState<Match[] | null>(null);
   const [apply, setApply] = useState<{ job: ExternalJob; consultantId?: number } | null>(null);
@@ -57,10 +57,10 @@ export default function ExternalJobs() {
 
   const load = useCallback(() => {
     setList(null);
-    api<ExternalJob[]>('/external-jobs', { query: { searchId: view.searchId, consultantId: view.consultantId, hidden: filter.hidden || undefined, linkedIn: filter.linkedIn || undefined, scope } })
+    api<ExternalJob[]>('/external-jobs', { query: { searchId: view.searchId, consultantId: view.consultantId, hidden: filter.hidden || undefined, board: filter.board || undefined, scope } })
       .then(r => { setList(r); setSel(s => (r.some(x => x.id === s) ? s : r[0]?.id ?? null)); })
       .catch(e => { setList([]); onError(e); });
-  }, [view.searchId, view.consultantId, filter.hidden, filter.linkedIn, scope, onError]);
+  }, [view.searchId, view.consultantId, filter.hidden, filter.board, scope, onError]);
   useEffect(load, [load]);
 
   useEffect(() => {
@@ -113,18 +113,25 @@ export default function ExternalJobs() {
     if (window.matchMedia('(max-width: 1000px)').matches) setTimeout(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
 
-  const quota = status?.configured ? `${status.callsToday} of ${status.dailyLimit} searches used today` : null;
+  // Only JSearch is metered; Dice is free.
+  const quota = status?.indeed ? `${status.callsToday} of ${status.dailyLimit} Indeed / LinkedIn searches used today` : null;
+  const boards = [...(status?.dice ? ['Dice'] : []), ...(status?.indeed ? ['Indeed', 'LinkedIn', 'Monster', 'Glassdoor'] : [])];
 
   return (
     <>
       <div className="ph"><div><h1>External Jobs</h1>
-        <p>Jobs from LinkedIn, Indeed, Glassdoor, Dice and company sites (via {status?.provider ?? 'JSearch'}), scored against your bench. Apply a candidate in one step.</p></div>
-        {quota && <span className="tag s" title="The limit is shared by the whole company and resets at midnight UTC">{quota}</span>}</div>
+        <p>Live jobs from {boards.length ? boards.join(', ') : 'job boards'}, scored against your bench. Apply a candidate in one step.</p></div>
+        {quota && <span className="tag s" title="The JSearch limit is shared by the whole company and resets at midnight UTC. Dice searches don't count.">{quota}</span>}</div>
 
       {status && !status.configured && (
         <Alert type="info" title="Live job search isn't set up yet">
-          Ask your admin to add a JSearch key from RapidAPI to the API settings (<span className="mono">JobFeed:RapidApiKey</span>) and restart the API.
+          Ask your admin to turn on Dice (<span className="mono">JobFeed:DiceEnabled</span>) or add a JSearch key from RapidAPI (<span className="mono">JobFeed:RapidApiKey</span>) and restart the API.
           Jobs saved from earlier searches still work below.
+        </Alert>
+      )}
+      {status?.configured && status.dice && !status.indeed && (
+        <Alert type="info" title="Searching Dice only">
+          To include Indeed, LinkedIn, Monster and Glassdoor jobs too, ask your admin to add a JSearch key from RapidAPI (<span className="mono">JobFeed:RapidApiKey</span>).
         </Alert>
       )}
 
@@ -159,7 +166,8 @@ export default function ExternalJobs() {
           {DATES.map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select>
         <label className="flex"><input type="checkbox" checked={form.contractOnly} onChange={e => setForm({ ...form, contractOnly: e.target.checked })} />Contract jobs only</label>
         <label className="flex"><input type="checkbox" checked={form.remoteOnly} onChange={e => setForm({ ...form, remoteOnly: e.target.checked })} />Remote only</label>
-        <span className="muted" style={{ fontSize: 12.5 }}>Fewer skills find more jobs. Searches send only skills, title and location, never consultant names or contact details.</span>
+        <span className="muted" style={{ fontSize: 12.5 }}>Fewer skills find more jobs. Searches send only skills, title and location, never consultant names or contact details.
+          {status?.dice && ' Dice listings come from Dice\'s AI-powered job search: check the details with the employer before submitting.'}</span>
       </div>
 
       <div className="rescount">
@@ -170,7 +178,8 @@ export default function ExternalJobs() {
           <input className="inp" style={{ width: 170, padding: '6px 10px' }} placeholder="Filter results" aria-label="Filter results" value={filter.q} onChange={e => setFilter({ ...filter, q: e.target.value })} />
           <select value={filter.minScore} onChange={e => setFilter({ ...filter, minScore: e.target.value })} aria-label="Minimum match">
             {[['', 'Any match'], ['50', '50%+ match'], ['60', '60%+ match'], ['75', '75%+ match']].map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select>
-          <label className="flex" style={{ fontSize: 13 }}><input type="checkbox" checked={filter.linkedIn} onChange={e => setFilter({ ...filter, linkedIn: e.target.checked })} />LinkedIn jobs only</label>
+          <select value={filter.board} onChange={e => setFilter({ ...filter, board: e.target.value })} aria-label="Job board">
+            {[['', 'All job boards'], ['dice', 'Dice'], ['indeed', 'Indeed'], ['linkedin', 'LinkedIn'], ['monster', 'Monster']].map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select>
           <label className="flex" style={{ fontSize: 13 }}><input type="checkbox" checked={filter.hidden} onChange={e => setFilter({ ...filter, hidden: e.target.checked })} />Show hidden jobs</label>
         </span>
       </div>

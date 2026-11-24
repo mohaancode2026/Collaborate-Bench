@@ -40,11 +40,13 @@ export default function Login() {
     window.history.replaceState(null, '', '/login');
     if (err) { setAlert(MS_ERRORS[err] ?? MS_ERRORS.failed); return; }
     setMsBusy(true);
-    api<{ token: string; user: User }>('/auth/microsoft/exchange', { method: 'POST', body: { code } })
+    api<{ token: string; user: User; mailConnected: boolean; newAccount: boolean }>('/auth/microsoft/exchange', { method: 'POST', body: { code } })
       .then(res => {
         const u = completeLogin(res);
-        notify('success', `Welcome back, ${u.name.split(' ')[0]}`, 'Signed in with Microsoft. Your vendor emails are being tracked.');
-        nav('/dashboard', { replace: true });
+        if (res.newAccount) notify('success', `Welcome, ${u.name.split(' ')[0]}`, `Your account was created with ${u.role} access. Ask your admin to add you to a team.${res.mailConnected ? '' : " Connect Outlook from Vendor Mail to track vendor emails."}`);
+        else if (res.mailConnected) notify('success', `Welcome back, ${u.name.split(' ')[0]}`, 'Signed in with Microsoft. Your vendor emails are being tracked.');
+        else notify('warning', `Welcome back, ${u.name.split(' ')[0]}`, "Signed in with Microsoft, but Outlook couldn't be connected, so vendor emails aren't tracked yet. Connect Outlook from Vendor Mail.");
+        nav(takeReturnPath() ?? '/dashboard', { replace: true });
       })
       .catch(e => setAlert(e instanceof ApiError ? { type: 'error', title: e.title, detail: e.detail } : MS_ERRORS.failed))
       .finally(() => setMsBusy(false));
@@ -54,6 +56,8 @@ export default function Login() {
     setMsBusy(true); setAlert(null);
     try {
       const r = await api<{ url: string }>('/auth/microsoft/start', { method: 'POST', body: { mode: 'login', loginHint: /@/.test(email) ? email.trim() : undefined } });
+      // Router state doesn't survive the round trip to Microsoft, so keep the page the user was heading to.
+      try { if (loc.state?.from) sessionStorage.setItem(RETURN_KEY, loc.state.from); else sessionStorage.removeItem(RETURN_KEY); } catch { /* storage blocked */ }
       window.location.assign(r.url);
     } catch (e) {
       setMsBusy(false);
@@ -154,6 +158,17 @@ const POINTS: [string, string, string][] = [
   ['M4 4h16a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2zM22 6l-10 7L2 6', 'Vendor submissions & follow-ups', 'RTR, submissions and reminders tracked through to billing.'],
   ['M13 2L3 14h9l-1 8 10-12h-9l1-8z', 'Autopilot', 'Prepares matches and follow-ups for you to approve.'],
 ];
+
+const RETURN_KEY = 'cbs.msReturn';
+
+/** The in-app path saved before going to Microsoft, used once. Only same-app paths ("/x", not "//host") are accepted. */
+function takeReturnPath(): string | null {
+  try {
+    const p = sessionStorage.getItem(RETURN_KEY);
+    sessionStorage.removeItem(RETURN_KEY);
+    return p && p.startsWith('/') && !p.startsWith('//') && !p.startsWith('/\\') && !p.startsWith('/login') ? p : null;
+  } catch { return null; }
+}
 
 const MS_ERRORS: Record<string, { type: 'error' | 'warning' | 'info'; title: string; detail: string }> = {
   not_registered: { type: 'error', title: 'Account not set up', detail: "Your Microsoft account isn't registered in Collaborate-Bench. Ask your admin to add your work email in Team & Access." },

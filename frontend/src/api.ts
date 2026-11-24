@@ -177,7 +177,8 @@ export interface ExternalJob {
   requirementId?: number | null; hidden: boolean; topScore: number; matches: Match[];
 }
 export interface ExternalSearchResult { searchId: number; query: string; location?: string | null; cached: boolean; found: number; new: number; jobs: ExternalJob[]; }
-export interface JobFeedStatus { configured: boolean; provider: string; callsToday: number; dailyLimit: number; autoRefreshHours: number; lastSearchUtc?: string | null; storedJobs: number; }
+/** provider: the sources searched, for display. dice / indeed: whether each source is on. callsToday counts JSearch only (Dice is free). */
+export interface JobFeedStatus { configured: boolean; provider: string; callsToday: number; dailyLimit: number; autoRefreshHours: number; lastSearchUtc?: string | null; storedJobs: number; dice: boolean; indeed: boolean; }
 export interface VendorInfo { id: number; name: string; domains: string[]; active: boolean; sent: number; received: number; lastContactUtc?: string | null; awaitingReply: number; }
 export interface VendorEmail {
   id: number; sentUtc: string; direction: 'In' | 'Out'; vendorId: number; vendor: string; fromAddress: string; fromName?: string | null;

@@ -10,15 +10,21 @@ using Microsoft.Extensions.Options;
 
 namespace CollaborateBench.Api.Services;
 
-/// <summary>"JobFeed" section of appsettings. Without RapidApiKey the feature shows a setup message and makes no calls.</summary>
+/// <summary>"JobFeed" section of appsettings. Two sources: Dice (free, on by default) and JSearch (Indeed, LinkedIn, Glassdoor…; needs RapidApiKey).</summary>
 public sealed class JobFeedOptions
 {
     public string Provider { get; set; } = "JSearch";
+    /// <summary>Search Dice through its public MCP server. No key needed.</summary>
+    public bool DiceEnabled { get; set; } = true;
+    public string DiceMcpUrl { get; set; } = "https://mcp.dice.com/mcp";
+    public int DiceJobsPerSearch { get; set; } = 25;
+    /// <summary>Fetch each Dice job's full description and skills (one extra call per job) for better matching.</summary>
+    public bool DiceDetails { get; set; } = true;
     /// <summary>RapidAPI key with a JSearch subscription. Keep it in user secrets or environment variables, not in source control.</summary>
     public string RapidApiKey { get; set; } = "";
     public string BaseUrl { get; set; } = "https://jsearch.p.rapidapi.com/";
     public string Host { get; set; } = "jsearch.p.rapidapi.com";
-    /// <summary>Calls to the provider per day (UTC) for the whole company, manual and automatic together.</summary>
+    /// <summary>JSearch calls per day (UTC) for the whole company, manual and automatic together. Dice searches don't count.</summary>
     public int DailyCallLimit { get; set; } = 50;
     /// <summary>The same search within this many hours reuses the saved results instead of calling the API.</summary>
     public int CacheHours { get; set; } = 6;
@@ -27,7 +33,13 @@ public sealed class JobFeedOptions
     public int AutoRefreshMaxSearches { get; set; } = 10;
     /// <summary>Jobs not seen again for this many days (and never imported) are deleted.</summary>
     public int KeepDays { get; set; } = 30;
-    public bool Configured => !string.IsNullOrWhiteSpace(RapidApiKey);
+    public bool JSearchConfigured => !string.IsNullOrWhiteSpace(RapidApiKey);
+    /// <summary>At least one source can be searched.</summary>
+    public bool Configured => DiceEnabled || JSearchConfigured;
+    /// <summary>The sources a search uses, e.g. ["Dice", "JSearch"].</summary>
+    public List<string> Sources => [.. DiceEnabled ? new[] { "Dice" } : [], .. JSearchConfigured ? new[] { Provider } : []];
+    /// <summary>For messages and the audit log: "Dice and JSearch (Indeed, LinkedIn, Glassdoor)".</summary>
+    public string SourceLabel => string.Join(" and ", Sources.Select(s => s == "Dice" ? "Dice" : $"{s} (Indeed, LinkedIn, Monster, Glassdoor)"));
 }
 
 public sealed record FetchedJob(string ExternalId, string Title, string Company, string Location, bool Remote, string? EmploymentType,
@@ -130,7 +142,7 @@ public sealed class JSearchClient(IHttpClientFactory factory, IOptions<JobFeedOp
         url is { Length: <= 2000 } && Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme is "http" or "https";
 
     /// <summary>Salary → $/hr (2,080 working hours a year). Values outside $10–$500/hr are treated as unknown.</summary>
-    private static decimal? Hourly(decimal? amount, string? period)
+    internal static decimal? Hourly(decimal? amount, string? period)
     {
         if (amount is not > 0) return null;
         decimal? h = period?.ToUpperInvariant() switch
@@ -202,9 +214,13 @@ public static class JobText
         return includeTitle && t.Length >= 2 ? $"{t} {s}" : s;
     }
 
-    public static bool OnLinkedIn(ExternalJob j) =>
-        (j.Publisher?.Contains("linkedin", StringComparison.OrdinalIgnoreCase) ?? false)
-        || j.ApplyOptions.Any(o => o.Publisher.Contains("linkedin", StringComparison.OrdinalIgnoreCase));
+    public static bool OnLinkedIn(ExternalJob j) => OnBoard(j, "linkedin");
+
+    /// <summary>Listed on that job board: Dice jobs come from the Dice source; Indeed / LinkedIn by publisher or apply links.</summary>
+    public static bool OnBoard(ExternalJob j, string board) =>
+        j.Provider.Equals(board, StringComparison.OrdinalIgnoreCase)
+        || (j.Publisher?.Contains(board, StringComparison.OrdinalIgnoreCase) ?? false)
+        || j.ApplyOptions.Any(o => o.Publisher.Contains(board, StringComparison.OrdinalIgnoreCase));
 
     private static readonly Regex Email = new(@"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", RegexOptions.Compiled);
     /// <summary>Recruiter emails written in the posting ("send resumes to ..."), common in C2C vendor posts.</summary>
@@ -214,17 +230,19 @@ public static class JobText
             .Distinct(StringComparer.OrdinalIgnoreCase).Take(3).ToList();
 }
 
-/// <summary>Searches the provider, saves results (deduplicated), and enforces the cache and the daily call limit.</summary>
-public sealed class JobFeedService(AppDbContext db, JSearchClient client, IOptions<JobFeedOptions> options, ILogger<JobFeedService> log)
+/// <summary>Searches Dice and JSearch side by side, saves results (deduplicated per source), and enforces the cache and JSearch's daily limit.</summary>
+public sealed class JobFeedService(AppDbContext db, JSearchClient client, DiceClient dice, IOptions<JobFeedOptions> options, ILogger<JobFeedService> log)
 {
     public JobFeedOptions Options => options.Value;
     private static readonly string[] DatePostedValues = ["all", "today", "3days", "week", "month"];
     public static string NormalizeDate(string? d) => d != null && DatePostedValues.Contains(d) ? d : "week";
 
+    /// <summary>Paid JSearch calls today. Dice is free, so Dice-only searches aren't counted.</summary>
     public Task<int> CallsTodayAsync(CancellationToken ct = default)
     {
         var since = DateTime.UtcNow.Date;
-        return db.ExternalJobSearches.CountAsync(s => s.CreatedUtc >= since && !s.CacheHit, ct);
+        var jsearch = Options.Provider;
+        return db.ExternalJobSearches.CountAsync(s => s.CreatedUtc >= since && !s.CacheHit && s.Provider.Contains(jsearch), ct);
     }
 
     public async Task<(ExternalJobSearch Search, int Added)> SearchAsync(string query, string? location, bool remoteOnly, string datePosted,
@@ -233,11 +251,12 @@ public sealed class JobFeedService(AppDbContext db, JSearchClient client, IOptio
         var o = Options;
         if (!o.Configured)
             throw new AppException(503, "JOBFEED_NOT_CONFIGURED", "Job search isn't set up",
-                "Add a JSearch (RapidAPI) key to the API settings under JobFeed:RapidApiKey, then restart the API.");
+                "Turn on JobFeed:DiceEnabled, or add a JSearch (RapidAPI) key under JobFeed:RapidApiKey, then restart the API.");
 
         query = Regex.Replace(query, @"\s+", " ").Trim();
         location = string.IsNullOrWhiteSpace(location) ? null : Regex.Replace(location, @"\s+", " ").Trim();
-        var key = $"{o.Provider}|{query.ToLowerInvariant()}|{location?.ToLowerInvariant()}|{remoteOnly}|{datePosted}|{contractOnly}";
+        var sources = o.Sources;
+        var key = $"{string.Join('+', sources)}|{query.ToLowerInvariant()}|{location?.ToLowerInvariant()}|{remoteOnly}|{datePosted}|{contractOnly}";
         if (key.Length > 400) key = key[..400];
 
         var fresh = DateTime.UtcNow.AddHours(-o.CacheHours);
@@ -246,7 +265,7 @@ public sealed class JobFeedService(AppDbContext db, JSearchClient client, IOptio
             .OrderByDescending(s => s.CreatedUtc).FirstOrDefaultAsync(ct);
         var entry = new ExternalJobSearch
         {
-            Provider = o.Provider, QueryKey = key, Query = query, Location = location, UserId = userId, Automatic = automatic,
+            Provider = string.Join('+', sources), QueryKey = key, Query = query, Location = location, UserId = userId, Automatic = automatic,
         };
         if (cached != null)
         {
@@ -258,33 +277,59 @@ public sealed class JobFeedService(AppDbContext db, JSearchClient client, IOptio
             return (entry, 0);
         }
 
-        if (await CallsTodayAsync(ct) >= o.DailyCallLimit)
-            throw new AppException(429, "JOBFEED_DAILY_LIMIT", "Daily job search limit reached",
-                $"The team has used all {o.DailyCallLimit} job searches for today. Saved jobs are still available, and the limit resets at midnight UTC.");
-
-        List<FetchedJob> found;
-        try { found = await client.SearchAsync(query, location, remoteOnly, datePosted, contractOnly, ct); }
-        catch (AppException ex)
+        // JSearch is paid and capped per day; Dice is free. When JSearch is over its limit, Dice still runs.
+        var useJSearch = o.JSearchConfigured;
+        var errors = new List<AppException>();
+        if (useJSearch && await CallsTodayAsync(ct) >= o.DailyCallLimit)
         {
-            entry.Error = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
-            db.ExternalJobSearches.Add(entry);
-            await db.SaveChangesAsync(CancellationToken.None);
-            throw;
+            useJSearch = false;
+            errors.Add(new AppException(429, "JOBFEED_DAILY_LIMIT", "Daily job search limit reached",
+                $"The team has used all {o.DailyCallLimit} JSearch (Indeed, LinkedIn) searches for today. Saved jobs are still available, and the limit resets at midnight UTC."));
+        }
+        if (!useJSearch && !o.DiceEnabled) throw errors[0];
+        if (!useJSearch) entry.Provider = "Dice";
+
+        var calls = new List<(string Provider, Task<List<FetchedJob>> Task)>();
+        if (o.DiceEnabled) calls.Add(("Dice", dice.SearchAsync(query, location, remoteOnly, datePosted, contractOnly, ct)));
+        if (useJSearch) calls.Add((o.Provider, client.SearchAsync(query, location, remoteOnly, datePosted, contractOnly, ct)));
+        var results = new List<(string Provider, List<FetchedJob> Jobs)>();
+        foreach (var (provider, task) in calls)
+        {
+            try { results.Add((provider, await task)); }
+            catch (AppException ex) { log.LogWarning("Job search \"{Query}\" on {Provider} failed: {Error}", query, provider, ex.Message); errors.Add(ex); }
         }
 
-        var (ids, added) = await UpsertAsync(found, ct);
+        if (errors.Count > 0)
+        {
+            var msg = string.Join(" ", errors.Select(e => e.Message));
+            entry.Error = msg.Length > 500 ? msg[..500] : msg;
+        }
+        if (results.Count == 0)
+        {
+            db.ExternalJobSearches.Add(entry);
+            await db.SaveChangesAsync(CancellationToken.None);
+            throw errors[0];
+        }
+
+        var ids = new List<int>();
+        var added = 0;
+        foreach (var (provider, jobs) in results)
+        {
+            var (i, a) = await UpsertAsync(provider, jobs, ct);
+            ids.AddRange(i); added += a;
+        }
         entry.Succeeded = true;
         entry.ResultCount = ids.Count;
         entry.JobIds = ids;
         db.ExternalJobSearches.Add(entry);
         await db.SaveChangesAsync(ct);
-        log.LogInformation("Job search \"{Query}\" {Location}: {Count} jobs, {Added} new", query, location, ids.Count, added);
+        log.LogInformation("Job search \"{Query}\" {Location} on {Sources}: {Count} jobs, {Added} new", query, location,
+            string.Join(", ", results.Select(r => $"{r.Provider} {r.Jobs.Count}")), ids.Count, added);
         return (entry, added);
     }
 
-    private async Task<(List<int> Ids, int Added)> UpsertAsync(List<FetchedJob> found, CancellationToken ct)
+    private async Task<(List<int> Ids, int Added)> UpsertAsync(string provider, List<FetchedJob> found, CancellationToken ct)
     {
-        var provider = Options.Provider;
         var jobs = found.GroupBy(f => f.ExternalId).Select(g => g.First()).ToList();
         for (var attempt = 1; ; attempt++)
         {
@@ -339,7 +384,7 @@ public sealed class JobFeedRefresher(IServiceScopeFactory scopes, IOptions<JobFe
         var o = options.Value;
         if (!o.Configured || o.AutoRefreshHours <= 0)
         {
-            log.LogInformation("External job auto-refresh is off (needs JobFeed:RapidApiKey and JobFeed:AutoRefreshHours > 0).");
+            log.LogInformation("External job auto-refresh is off (needs a job source and JobFeed:AutoRefreshHours > 0).");
             return;
         }
         try

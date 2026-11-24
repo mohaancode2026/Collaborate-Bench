@@ -233,6 +233,62 @@ public sealed class VendorMailController(AppDbContext db, DataService data, ICur
             .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
     }
 
+    /// <summary>Scans connected Outlook mailboxes for outside companies that look like staffing vendors (requirements, rates, C2C, RTR,
+    /// two-way threads) and aren't in the vendor list yet. Reads sender, recipients, subject and first lines only, and saves nothing.
+    /// Admins and Delivery Managers scan every mailbox, a Team Lead their own and their team's, a Recruiter only their own.
+    /// <paramref name="mine"/> limits anyone to their own mailbox. Adding the results to the vendor list needs vendors.manage.</summary>
+    [HttpGet("vendors/discover"), RequirePerm("mail.view"), EnableRateLimiting("ai")]
+    public async Task<DiscoveryResult> Discover([FromServices] VendorDiscovery discovery, [FromQuery] int days = 30, [FromQuery] bool mine = false, CancellationToken ct = default)
+    {
+        if (!ms.Options.Configured)
+            throw AppException.Conflict("MICROSOFT_NOT_CONFIGURED", "Outlook isn't set up", "Ask your admin to set up the Microsoft app registration first.");
+        List<int> users = mine || me.DataScope == "OWN" ? [me.RequiredId]
+            : me.DataScope == "ALL" ? await db.MailConnections.Select(c => c.UserId).ToListAsync(ct)
+            : await db.UserHierarchy.Where(h => h.AncestorUserId == me.RequiredId).Select(h => h.DescendantUserId).ToListAsync(ct);
+        if (!users.Contains(me.RequiredId)) users.Add(me.RequiredId);
+        if (!await db.MailConnections.AnyAsync(c => users.Contains(c.UserId) && c.Status == "Active", ct))
+            throw AppException.Conflict("MAIL_NOT_CONNECTED", users.Count == 1 ? "Outlook isn't connected" : "No Outlook mailboxes connected",
+                users.Count == 1 ? "Connect your Outlook mailbox first, then look for vendors in it."
+                                 : "Connect Outlook first (or have your team sign in with Microsoft), then scan for vendors.");
+        var r = await discovery.ScanAsync(users, days, ct);
+        await audit.LogAsync("VENDOR_DISCOVER", $"Scanned {r.Mailboxes} mailbox(es), {r.MessagesRead} emails, last {r.Days} days: {r.Vendors.Count} possible vendors");
+        return r;
+    }
+
+    /// <summary>Adds several vendors at once (e.g. picked from a mailbox scan). Each one is validated on its own, so one bad entry
+    /// doesn't stop the rest; mailboxes are re-checked once at the end.</summary>
+    [HttpPost("vendors/batch"), RequirePerm("vendors.manage")]
+    public async Task<VendorBatchResult> CreateMany(VendorBatchInput input)
+    {
+        var items = input.Vendors ?? [];
+        if (items.Count is 0 or > 100) throw AppException.Bad("VALIDATION", "Pick vendors to add", "Choose between 1 and 100 vendors.");
+        var created = new List<VendorDto>();
+        var failed = new List<VendorBatchError>();
+        foreach (var item in items)
+        {
+            try
+            {
+                var (name, domains) = await ValidateAsync(item, null);
+                var v = new Vendor { Name = name, Domains = domains, CreatedByUserId = me.RequiredId };
+                db.Vendors.Add(v);
+                try { await db.SaveChangesAsync(); }
+                catch (DbUpdateException e) when (SqlErrors.IsDuplicate(e)) { db.Entry(v).State = EntityState.Detached; throw Duplicate(name); }
+                created.Add(new VendorDto(v.VendorId, v.Name, v.Domains, true, 0, 0, null, 0));
+            }
+            catch (AppException ex)
+            {
+                var why = ex.Errors?.Values.SelectMany(x => x).FirstOrDefault() ?? ex.Message;
+                failed.Add(new VendorBatchError(item.Name ?? "", string.Join(", ", item.Domains ?? []), why));
+            }
+        }
+        if (created.Count > 0)
+        {
+            await audit.LogAsync("VENDOR_CREATE", $"Added {created.Count} vendor(s): {string.Join(", ", created.Select(c => c.Name).Take(20))}");
+            await RescanAsync();
+        }
+        return new VendorBatchResult(created, failed);
+    }
+
     /// <summary>Adds a vendor with its email domains/addresses, then re-checks connected mailboxes for past emails with it.</summary>
     [HttpPost("vendors"), RequirePerm("vendors.manage")]
     public async Task<VendorDto> Create(VendorInput input)
