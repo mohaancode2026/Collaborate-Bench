@@ -15,6 +15,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
     private ClaimsPrincipal? Principal => http?.HttpContext?.User;
     public int CurrentUserId => int.TryParse(Principal?.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : 0;
     public string CurrentDataScope => Principal?.FindFirstValue("scope") ?? "";
+    /// <summary>bench.assign (Admin, Delivery Manager, Manager): sees every consultant to hand them to Team Leads.
+    /// Only the bench widens; submissions and the rest keep the role's data scope.</summary>
+    public bool CurrentSeesWholeBench => Principal?.HasClaim("perm", "bench.assign") ?? false;
 
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<Permission> Permissions => Set<Permission>();
@@ -48,6 +51,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
     public DbSet<CandidateLead> CandidateLeads => Set<CandidateLead>();
     public DbSet<CandidateActivity> CandidateActivities => Set<CandidateActivity>();
     public DbSet<CandidateReminder> CandidateReminders => Set<CandidateReminder>();
+    public DbSet<InboxItem> InboxItems => Set<InboxItem>();
+    public DbSet<ConsultantDocument> ConsultantDocuments => Set<ConsultantDocument>();
+    public DbSet<InboxTask> InboxTasks => Set<InboxTask>();
 
     /// <summary>SQL Server returns DATETIME2 without a kind; mark everything UTC so the browser shows correct local times.</summary>
     private sealed class UtcConverter() : ValueConverter<DateTime, DateTime>(
@@ -87,6 +93,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.HasOne(x => x.Role).WithMany().HasForeignKey(x => x.RoleId);
             e.HasOne(x => x.Manager).WithMany().HasForeignKey(x => x.ManagerUserId);
             e.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId);
+            e.Property(x => x.EmailSignature).HasMaxLength(2000);
         });
         m.Entity<UserHierarchy>(e => { e.ToTable("UserHierarchy", "sec"); e.HasKey(x => new { x.AncestorUserId, x.DescendantUserId }); });
 
@@ -106,11 +113,38 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.Property(x => x.PreferredLocations).HasMaxLength(200);
             e.Property(x => x.Education).HasMaxLength(300);
             e.Property(x => x.Certifications).HasMaxLength(500);
+            e.Property(x => x.LegalName).HasMaxLength(200);
+            e.Property(x => x.MarketingTechnology).HasMaxLength(200);
+            e.Property(x => x.Keywords).HasMaxLength(500);
+            e.Property(x => x.GoogleVoice).HasMaxLength(30);
+            e.Property(x => x.PersonalPhone).HasMaxLength(30);
+            e.Property(x => x.DateOfBirth).HasColumnType("date");
+            e.Property(x => x.SsnLast4).HasMaxLength(4).IsUnicode(false);
+            e.Property(x => x.IdType).HasMaxLength(20);
+            e.Property(x => x.Bachelors).HasMaxLength(300);
+            e.Property(x => x.Masters).HasMaxLength(300);
+            e.Property(x => x.LocationConstraints).HasMaxLength(200);
+            e.Property(x => x.CurrentProjectEnd).HasMaxLength(60);
+            e.Property(x => x.DoNotSubmit).HasMaxLength(500);
             e.HasIndex(x => x.LinkedInUrl).IsUnique().HasFilter("[LinkedInUrl] IS NOT NULL").HasDatabaseName("UQ_Consultants_LinkedInUrl");
             // Team visibility. SQL Server 2012 has no row-level security, so EF applies the same rule as sec.fn_CanAccessOwner.
-            e.HasQueryFilter(x => CurrentDataScope == "ALL"
+            e.HasQueryFilter(x => CurrentDataScope == "ALL" || CurrentSeesWholeBench
                 || (CurrentDataScope == "OWN" && x.OwnerUserId == CurrentUserId)
                 || (CurrentDataScope == "TEAM" && UserHierarchy.Any(h => h.AncestorUserId == CurrentUserId && h.DescendantUserId == x.OwnerUserId)));
+        });
+        m.Entity<ConsultantDocument>(e =>
+        {
+            e.ToTable("ConsultantDocuments", "bench");
+            e.HasKey(x => x.ConsultantDocumentId);
+            e.HasOne(x => x.Consultant).WithMany().HasForeignKey(x => x.ConsultantId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.UploadedBy).WithMany().HasForeignKey(x => x.UploadedByUserId).OnDelete(DeleteBehavior.Restrict);
+            e.Property(x => x.Kind).HasMaxLength(20).IsUnicode(false);
+            e.Property(x => x.FileName).HasMaxLength(200);
+            e.Property(x => x.FilePath).HasMaxLength(400);
+            e.Property(x => x.ContentType).HasMaxLength(100).IsUnicode(false);
+            e.Property(x => x.Note).HasMaxLength(300);
+            e.Property(x => x.ExpiresOn).HasColumnType("date");
+            e.HasIndex(x => x.ConsultantId);
         });
         m.Entity<Resume>(e => { e.ToTable("Resumes", "bench"); e.HasKey(x => x.ResumeId); });
         m.Entity<Requirement>(e =>
@@ -148,6 +182,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.Property(x => x.RowVer).IsRowVersion();
             // One submission per consultant per requirement (UQ_Sub_ConsReq in 01_schema.sql): duplicates break the RTR.
             e.HasIndex(x => new { x.ConsultantId, x.RequirementId }).IsUnique().HasDatabaseName("UQ_Sub_ConsReq");
+            // The grid filters by stage / owner and orders by time in stage.
+            e.HasIndex(x => new { x.Stage, x.StageChangedUtc });
+            e.HasIndex(x => new { x.OwnerUserId, x.StageChangedUtc });
             e.HasQueryFilter(x => CurrentDataScope == "ALL"
                 || (CurrentDataScope == "OWN" && x.OwnerUserId == CurrentUserId)
                 || (CurrentDataScope == "TEAM" && UserHierarchy.Any(h => h.AncestorUserId == CurrentUserId && h.DescendantUserId == x.OwnerUserId)));
@@ -165,6 +202,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.ToTable("AuditLog", "sec");
             e.HasKey(x => x.AuditId);
             e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId);
+            // The audit page: newest first, per user and per outcome.
+            e.HasIndex(x => new { x.UserId, x.AuditId });
+            e.HasIndex(x => new { x.Outcome, x.AuditId });
         });
         m.Entity<AiInteraction>(e => { e.ToTable("Interactions", "ai"); e.HasKey(x => x.InteractionId); });
 
@@ -270,6 +310,48 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
                 || (CurrentDataScope == "OWN" && x.Consultant.OwnerUserId == CurrentUserId)
                 || (CurrentDataScope == "TEAM" && UserHierarchy.Any(h => h.AncestorUserId == CurrentUserId && h.DescendantUserId == x.Consultant.OwnerUserId)));
         });
+        // AI Inbox: personal to each user (their own mailbox), so no team filter; controllers always filter by UserId.
+        m.Entity<InboxItem>(e =>
+        {
+            e.ToTable("InboxItems", "bench");
+            e.HasKey(x => x.InboxItemId);
+            e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(x => x.MessageId).HasMaxLength(400);
+            e.Property(x => x.ConversationId).HasMaxLength(400);
+            e.Property(x => x.FromAddress).HasMaxLength(256);
+            e.Property(x => x.FromName).HasMaxLength(200);
+            e.Property(x => x.Direction).HasMaxLength(3).IsUnicode(false).HasDefaultValue("In");
+            e.Property(x => x.ToAddresses).HasMaxLength(1000);
+            e.Property(x => x.RequestsJson).HasMaxLength(600);
+            e.Property(x => x.Team).HasMaxLength(20).IsUnicode(false);
+            e.Property(x => x.SlotsJson).HasMaxLength(400).IsUnicode(false);
+            e.Property(x => x.Subject).HasMaxLength(400);
+            e.Property(x => x.Summary).HasMaxLength(600);
+            e.Property(x => x.PriorityReason).HasMaxLength(300);
+            e.Property(x => x.Category).HasMaxLength(20).IsUnicode(false);
+            e.Property(x => x.Priority).HasMaxLength(10).IsUnicode(false);
+            e.Property(x => x.Engine).HasMaxLength(10).IsUnicode(false);
+            e.Property(x => x.Status).HasMaxLength(12).IsUnicode(false);
+            e.HasIndex(x => new { x.UserId, x.MessageId }).IsUnique();
+            e.HasIndex(x => new { x.UserId, x.Status, x.ReceivedUtc });
+            e.HasIndex(x => new { x.UserId, x.ConversationId });
+        });
+        m.Entity<InboxTask>(e =>
+        {
+            e.ToTable("InboxTasks", "bench");
+            e.HasKey(x => x.InboxTaskId);
+            e.HasOne(x => x.InboxItem).WithMany().HasForeignKey(x => x.InboxItemId).OnDelete(DeleteBehavior.SetNull);
+            e.Property(x => x.Kind).HasMaxLength(12).IsUnicode(false);
+            e.Property(x => x.Title).HasMaxLength(300);
+            e.Property(x => x.Location).HasMaxLength(500);
+            e.Property(x => x.Notes).HasMaxLength(1000);
+            e.Property(x => x.Status).HasMaxLength(12).IsUnicode(false);
+            e.Property(x => x.Action).HasMaxLength(30).IsUnicode(false);
+            e.Property(x => x.InterviewType).HasMaxLength(20);
+            e.Property(x => x.SlotsJson).HasMaxLength(400).IsUnicode(false);
+            e.HasIndex(x => new { x.UserId, x.Status, x.DueUtc });
+            e.HasIndex(x => x.ParentTaskId);
+        });
         m.Entity<CandidateReminder>(e =>
         {
             e.ToTable("CandidateReminders", "bench");
@@ -307,6 +389,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options, IHttpCo
             e.Property(x => x.TargetClient).HasMaxLength(200);
             e.Property(x => x.Engine).HasMaxLength(10).IsUnicode(false);
             e.Property(x => x.Notice).HasMaxLength(500);
+            e.Property(x => x.FilePath).HasMaxLength(400);
             foreach (var p in new[] { nameof(TailoredResume.Changes), nameof(TailoredResume.Gaps), nameof(TailoredResume.Warnings), nameof(TailoredResume.Matched) })
                 e.Property<List<string>>(p).HasConversion(JsonList, JsonListComparer);
             e.HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);

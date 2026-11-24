@@ -17,8 +17,9 @@ namespace CollaborateBench.Api.Controllers;
 /// are listed as gaps. Every version is checked against the original, and unverified content is flagged.
 /// </summary>
 [ApiController, Route("api/resumes")]
-public sealed class ResumesController(AppDbContext db, DataService data, ResumeTailor tailor, ICurrentUser me, AuditService audit) : ControllerBase
+public sealed class ResumesController(AppDbContext db, DataService data, ResumeTailor tailor, ICurrentUser me, AuditService audit, ResumeStore store, ResumeFiles files) : ControllerBase
 {
+    private const string DocxType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
     private const int MinResumeChars = 200, MaxResumeChars = 60_000;
 
@@ -47,6 +48,53 @@ public sealed class ResumesController(AppDbContext db, DataService data, ResumeT
         await db.SaveChangesAsync();
         await audit.LogAsync("RESUME_UPLOAD", $"Uploaded the original resume for {c.Name}{(input.FileName is { Length: > 0 } f ? $" ({f})" : "")}", "Consultant", c.Id);
         return (await LatestSourceAsync(c.Id))!;
+    }
+
+    /// <summary>
+    /// Stores the uploaded file itself (PDF, DOCX, DOC, RTF, TXT; up to 10 MB) with an original resume, so the exact file the
+    /// consultant gave can be sent to vendors. Without resumeId, it goes with the consultant's newest original resume.
+    /// </summary>
+    [HttpPost("source/file"), RequirePerm("bench.edit"), RequestSizeLimit(ResumeStore.MaxBytes + 100_000)]
+    public async Task<ResumeSourceDto> UploadSourceFile([FromForm] int consultantId, [FromForm] int? resumeId, IFormFile? file, CancellationToken ct)
+    {
+        var c = await data.ConsultantAsync(consultantId);
+        new Validator()
+            .Check(file is { Length: > 0 }, "file", "Choose the resume file")
+            .Check(file is null || file.Length <= ResumeStore.MaxBytes, "file", "The file is larger than 10 MB")
+            .Check(file is null || ResumeStore.Allowed(file.FileName), "file", "Use a PDF, Word (DOCX/DOC), RTF or text file")
+            .ThrowIfInvalid();
+        var resume = await db.Resumes.Where(r => r.ConsultantId == c.Id && (resumeId == null || r.ResumeId == resumeId))
+                         .OrderByDescending(r => r.UploadedUtc).ThenByDescending(r => r.ResumeId).FirstOrDefaultAsync(ct)
+                     ?? throw AppException.NotFound("Resume");
+        using var ms = new MemoryStream();
+        await file!.CopyToAsync(ms, ct);
+        var old = resume.BlobUri;
+        resume.BlobUri = await store.SaveOriginalAsync(c.Id, resume.ResumeId, file.FileName, ms.ToArray(), ct);
+        resume.FileName = Path.GetFileName(file.FileName) is { Length: > 255 } n ? n[..255] : Path.GetFileName(file.FileName);
+        await db.SaveChangesAsync(ct);
+        if (old != null && old != resume.BlobUri) store.Delete(old);
+        await audit.LogAsync("RESUME_FILE", $"Stored the resume file {resume.FileName} for {c.Name}", "Consultant", c.Id);
+        return (await LatestSourceAsync(c.Id))!;
+    }
+
+    /// <summary>Downloads the stored original file (as uploaded). 404 when only text was saved.</summary>
+    [HttpGet("source/{consultantId:int}/file"), RequirePerm("bench.view")]
+    public async Task<IActionResult> SourceFile(int consultantId, CancellationToken ct)
+    {
+        var c = await data.ConsultantAsync(consultantId);
+        var r = await db.Resumes.AsNoTracking().Where(x => x.ConsultantId == c.Id && x.BlobUri != null)
+                    .OrderByDescending(x => x.UploadedUtc).ThenByDescending(x => x.ResumeId).FirstOrDefaultAsync(ct)
+                ?? throw AppException.NotFound("Resume file");
+        var bytes = await store.ReadAsync(r.BlobUri, ct) ?? throw AppException.NotFound("Resume file");
+        await audit.LogAsync("RESUME_DOWNLOAD", $"Downloaded {c.Name}'s original resume file", "Consultant", c.Id);
+        return File(bytes, ResumeStore.ContentType(r.BlobUri!), r.FileName ?? $"{c.Name} - Resume{Path.GetExtension(r.BlobUri)}");
+    }
+
+    /// <summary>Writes the version's Word file to the resume folder (after it's created or edited).</summary>
+    private async Task SaveVersionFileAsync(TailoredResume t, ResumeDoc doc, CancellationToken ct)
+    {
+        t.FilePath = await store.SaveVersionAsync(t.ConsultantId, t.TailoredResumeId, ResumeDocx.Build(doc), ct);
+        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -90,6 +138,7 @@ public sealed class ResumesController(AppDbContext db, DataService data, ResumeT
         };
         db.TailoredResumes.Add(entity);
         await db.SaveChangesAsync(CancellationToken.None);
+        await SaveVersionFileAsync(entity, res.Doc, CancellationToken.None);
         await audit.LogAsync("RESUME_TAILOR", $"Tailored {c.Name}'s resume for {name} ({res.Engine}; {res.Gaps.Count} gaps, {res.Warnings.Count} warnings)", "Consultant", c.Id);
         return await DtoAsync(entity.TailoredResumeId);
     }
@@ -132,6 +181,7 @@ public sealed class ResumesController(AppDbContext db, DataService data, ResumeT
         t.Name = name;
         t.UpdatedUtc = DateTime.UtcNow;
         await db.SaveChangesAsync();
+        await SaveVersionFileAsync(t, doc, CancellationToken.None);   // every save rewrites the stored Word file
         return await DtoAsync(id);
     }
 
@@ -143,8 +193,24 @@ public sealed class ResumesController(AppDbContext db, DataService data, ResumeT
         var c = await data.ConsultantAsync(t.ConsultantId);
         db.TailoredResumes.Remove(t);
         await db.SaveChangesAsync();
+        store.Delete(t.FilePath);
         await audit.LogAsync("RESUME_DELETE", $"Deleted resume version \"{t.Name}\" for {c.Name}", "Consultant", c.Id);
         return NoContent();
+    }
+
+    /// <summary>
+    /// The resume to attach to a vendor submission: the consultant's latest resume, whichever was saved most recently:
+    /// a Resume Builder version (its stored Word file) or an uploaded original (the file exactly as uploaded, or a Word file
+    /// of its text when only text was saved). 409 NO_RESUME when nothing is on file. Recorded in the audit log.
+    /// </summary>
+    [HttpGet("submission/{consultantId:int}"), RequirePerm("bench.view")]
+    public async Task<IActionResult> ForSubmission(int consultantId, CancellationToken ct)
+    {
+        var c = await data.ConsultantAsync(consultantId);   // 404 when outside your team
+        var file = await files.LatestAsync(c.Id, c.Name, c.Title, ct)
+                   ?? throw AppException.Conflict("NO_RESUME", "No resume on file", $"Upload {c.Name}'s resume (Resume Parser or Resume Builder) to attach it to submissions.");
+        await audit.LogAsync("RESUME_DOWNLOAD", $"Attached {c.Name}'s latest resume ({file.Kind}) to a submission email", "Consultant", c.Id);
+        return File(file.Bytes, file.ContentType, file.FileName);
     }
 
     /// <summary>Downloads the version as a Word document (.docx). Recorded in the audit log, since resumes leave the system this way.</summary>

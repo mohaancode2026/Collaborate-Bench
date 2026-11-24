@@ -18,6 +18,9 @@ public sealed class ResumeDoc
     public List<string> Certifications { get; set; } = new();
     /// <summary>Original text kept as-is when it couldn't be structured (built-in engine).</summary>
     public string? AdditionalText { get; set; }
+    /// <summary>The whole document is the original resume text (no "Professional Experience" heading over it). Export only.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool WholeTextOnly { get; set; }
 
     // ----- design (preview, print and Word export all follow these) -----
     /// <summary>classic | modern | compact</summary>

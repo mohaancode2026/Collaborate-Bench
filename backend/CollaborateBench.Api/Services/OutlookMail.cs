@@ -34,6 +34,8 @@ public sealed class MicrosoftOptions
     /// <summary>Role given to a company account the first time it signs in with Microsoft and isn't in Team &amp; Access yet.
     /// Empty turns auto sign-up off (unknown accounts get "Account not set up"). Only works with a specific TenantId, never for guests.</summary>
     public string AutoProvisionRole { get; set; } = "Recruiter";
+    /// <summary>True = users must sign in with Microsoft (Outlook). Password sign-in stays only for Admins (break-glass).</summary>
+    public bool RequireMicrosoftLogin { get; set; }
     /// <summary>True when TenantId names one organisation. "common" / "organizations" / "consumers" would let any Microsoft account in.</summary>
     public bool SingleTenant => !string.IsNullOrWhiteSpace(TenantId) && TenantId.Trim().ToLowerInvariant() is not ("common" or "organizations" or "consumers");
     public int MailSyncMinutes { get; set; } = 10;
@@ -337,6 +339,9 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
             if (tracked > 0) log.LogInformation("Mail sync for user {User}: read {Read}, tracked {Tracked} vendor emails", userId, messages.Count, tracked);
             try { await FollowUps.ReconcileAsync(db, userId, followUps.Value, ct); }
             catch (Exception ex) when (ex is not OperationCanceledException) { log.LogWarning(ex, "Follow-up reminders for user {User} not updated", userId); }
+            // AI Inbox: triage new Inbox mail (all senders, not only vendors). A failure here never fails the sync.
+            try { await scope.ServiceProvider.GetRequiredService<InboxTriage>().ProcessAsync(db, userId, conn.Mailbox, accessToken, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { log.LogWarning(ex, "AI Inbox for user {User} not updated", userId); }
             return new SyncResult(messages.Count, tracked, "Active", null);
         }
         finally { _gate.Release(); }
@@ -402,7 +407,7 @@ public sealed record OutgoingAttachment(string Name, string ContentType, byte[] 
 public sealed record OutgoingMail(List<string> To, List<string> Cc, string Subject, string Body, List<OutgoingAttachment> Attachments, string? ReplyToMessageId);
 
 /// <summary>Sends mail as the signed-in user through Microsoft Graph, so it lands in their own Sent Items and the vendor's thread.</summary>
-public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync sync, IHttpClientFactory http, ILogger<MailSender> log)
+public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync sync, IHttpClientFactory http, MailSignatureService signatures, ILogger<MailSender> log)
 {
     public async Task SendAsync(int userId, OutgoingMail mail, CancellationToken ct)
     {
@@ -422,37 +427,64 @@ public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync syn
             ["@odata.type"] = "#microsoft.graph.fileAttachment", ["name"] = a.Name, ["contentType"] = a.ContentType, ["contentBytes"] = Convert.ToBase64String(a.Bytes),
         };
 
-        if (mail.ReplyToMessageId is null)
+        var attachments = new JsonArray(mail.Attachments.Select(a => (JsonNode)Attachment(a)).ToArray());
+
+        // The text ends with the user's Outlook signature: send HTML with the real signature (formatting, links, logo images
+        // inline), as Outlook would. Otherwise plain text, exactly as written.
+        var (contentType, content) = ("Text", mail.Body);
+        var rich = (await signatures.GetAsync(userId, ct)).Rich;
+        if (rich?.Html is { } sigHtml && mail.Body.LastIndexOf(rich.Text, StringComparison.Ordinal) is var at and >= 0)
         {
-            var message = new JsonObject
-            {
-                ["subject"] = mail.Subject,
-                ["body"] = new JsonObject { ["contentType"] = "Text", ["content"] = mail.Body },
-                ["toRecipients"] = Recipients(mail.To), ["ccRecipients"] = Recipients(mail.Cc),
-                ["attachments"] = new JsonArray(mail.Attachments.Select(a => (JsonNode)Attachment(a)).ToArray()),
-            };
-            await GraphAsync(client, token, HttpMethod.Post, $"{graph}/sendMail", new JsonObject { ["message"] = message, ["saveToSentItems"] = true }, userId, ct);
+            static string Html(string s) => WebUtility.HtmlEncode(s).Replace("\r\n", "\n").Replace("\n", "<br>\n");
+            var before = mail.Body[..at].TrimEnd();
+            var after = mail.Body[(at + rich.Text.Length)..].Trim();
+            content = "<div style=\"font-family:Aptos,Calibri,Arial,sans-serif;font-size:11pt\">" + Html(before) + "</div><br>\n" + sigHtml
+                      + (after.Length > 0 ? "<div style=\"font-family:Aptos,Calibri,Arial,sans-serif;font-size:11pt\">" + Html(after) + "</div>" : "");
+            contentType = "HTML";
+            foreach (var img in rich.Images)
+                attachments.Add(new JsonObject
+                {
+                    ["@odata.type"] = "#microsoft.graph.fileAttachment", ["name"] = img.Name, ["contentType"] = img.ContentType,
+                    ["contentBytes"] = Convert.ToBase64String(img.Bytes), ["isInline"] = true, ["contentId"] = img.ContentId,
+                });
         }
+
+        async Task SendNewAsync(string subject) => await GraphAsync(client, token, HttpMethod.Post, $"{graph}/sendMail", new JsonObject
+        {
+            ["message"] = new JsonObject
+            {
+                ["subject"] = subject,
+                ["body"] = new JsonObject { ["contentType"] = contentType, ["content"] = content },
+                ["toRecipients"] = Recipients(mail.To), ["ccRecipients"] = Recipients(mail.Cc),
+                ["attachments"] = attachments.DeepClone(),
+            },
+            ["saveToSentItems"] = true,
+        }, userId, ct);
+
+        if (mail.ReplyToMessageId is null) await SendNewAsync(mail.Subject);
         else
         {
-            // Reply inside the vendor's thread: draft reply (quotes the original), set recipients, attach files, send.
-            var draft = await GraphAsync(client, token, HttpMethod.Post, $"{graph}/messages/{Uri.EscapeDataString(mail.ReplyToMessageId)}/createReply",
-                new JsonObject { ["comment"] = mail.Body }, userId, ct);
-            var draftId = draft?["id"]?.GetValue<string>() ?? throw new AppException(502, "MAIL_ERROR", "Couldn't send the email", "Outlook didn't create the reply. Try again.");
+            // Reply inside the vendor's thread with Graph's one-step "reply" (quotes the original). It only needs Mail.Send:
+            // the old createReply → patch → send route writes a draft first, which needs Mail.ReadWrite and was refused (403).
             try
             {
-                await GraphAsync(client, token, HttpMethod.Patch, $"{graph}/messages/{Uri.EscapeDataString(draftId)}",
-                    new JsonObject { ["toRecipients"] = Recipients(mail.To), ["ccRecipients"] = Recipients(mail.Cc) }, userId, ct);
-                foreach (var a in mail.Attachments)
-                    await GraphAsync(client, token, HttpMethod.Post, $"{graph}/messages/{Uri.EscapeDataString(draftId)}/attachments", Attachment(a), userId, ct);
-                await GraphAsync(client, token, HttpMethod.Post, $"{graph}/messages/{Uri.EscapeDataString(draftId)}/send", null, userId, ct);
+                await GraphAsync(client, token, HttpMethod.Post, $"{graph}/messages/{Uri.EscapeDataString(mail.ReplyToMessageId)}/reply", new JsonObject
+                {
+                    ["comment"] = content,   // Outlook reads the reply comment as HTML, so the rich signature works here too
+                    ["message"] = new JsonObject
+                    {
+                        ["toRecipients"] = Recipients(mail.To), ["ccRecipients"] = Recipients(mail.Cc),
+                        ["attachments"] = attachments.DeepClone(),
+                    },
+                }, userId, ct);
             }
-            catch
+            catch (AppException e) when (e.Code is "MAIL_SEND_CONSENT" or "MAIL_ORIGINAL_GONE" or "MAIL_ERROR")
             {
-                // Don't leave a half-built draft in the user's mailbox.
-                try { await GraphAsync(client, token, HttpMethod.Delete, $"{graph}/messages/{Uri.EscapeDataString(draftId)}", null, userId, CancellationToken.None); }
-                catch (AppException) { /* best effort */ }
-                throw;
+                // The thread can't be answered (original deleted/moved, or the tenant blocks replies): send it as a new email instead
+                // of failing, so the follow-up still goes out. It lands in the same conversation for most mail apps via the "RE:" subject.
+                log.LogInformation("Reply in thread failed ({Code}); sent as a new email for user {User}", e.Code, userId);
+                var subject = string.IsNullOrWhiteSpace(mail.Subject) ? "RE:" : mail.Subject.StartsWith("RE:", StringComparison.OrdinalIgnoreCase) ? mail.Subject : "RE: " + mail.Subject;
+                await SendNewAsync(subject);
             }
         }
         sync.Kick(userId);   // the sent email shows up in Vendor Emails on the next quick sync

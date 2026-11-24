@@ -32,8 +32,25 @@ public static class Perm
         ["mail.view"] = "view vendor email activity", ["vendors.manage"] = "manage vendors and their email domains",
         ["templates.manage"] = "manage shared email templates",
         ["autopilot.manage"] = "turn the Autopilot on or off and change its settings",
+        ["hotlist.send"] = "generate and send the hotlist to vendors", ["leads.view"] = "view sourced leads", ["bench.assign"] = "assign consultants to Team Leads",
     };
     public static string Label(string? code) => code != null && Labels.TryGetValue(code, out var l) ? l : code ?? "do that";
+    /// <summary>Who to ask for access you don't have: a Bench Sales Executive asks their Team Lead, everyone else the Director of Sales.</summary>
+    public static string AskWho(string role) => role == "Recruiter" ? "Team Lead" : RoleNames.Label("Delivery Manager");
+}
+
+/// <summary>
+/// What each role is called in text people read. The role names stored in sec.Roles (Admin, Delivery Manager, Manager, Team Lead,
+/// Recruiter) stay the ids that permissions and rules use; these are the company's titles for them.
+/// </summary>
+public static class RoleNames
+{
+    private static readonly Dictionary<string, string> Labels = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Admin"] = "Admin", ["Delivery Manager"] = "Director of Sales", ["Manager"] = "Technical Coordinator",
+        ["Team Lead"] = "Team Lead", ["Recruiter"] = "Bench Sales Executive",
+    };
+    public static string Label(string? role) => role is null ? "" : Labels.TryGetValue(role, out var l) ? l : role;
 }
 
 /// <summary>[RequirePerm("bench.create")] on an action = the user's role must hold that permission.</summary>
@@ -67,7 +84,7 @@ public sealed class CurrentUser(IHttpContextAccessor http) : ICurrentUser
     public void Require(string perm)
     {
         if (!Has(perm))
-            throw AppException.Forbidden($"Your role ({Role}) can't {Perm.Label(perm)}. Ask your {(Role == "Recruiter" ? "Team Lead" : "Delivery Manager")} if you need this access.");
+            throw AppException.Forbidden($"Your role ({RoleNames.Label(Role)}) can't {Perm.Label(perm)}. Ask your {Perm.AskWho(Role)} if you need this access.");
     }
 }
 
@@ -220,7 +237,7 @@ public sealed class ProblemAuthorizationResultHandler : IAuthorizationMiddleware
             await ctx.RequestServices.GetRequiredService<AuditService>()
                 .DeniedAsync($"Tried to {Perm.Label(perm)} ({ctx.Request.Method} {ctx.Request.Path})");
             await Problem.WriteAsync(ctx, 403, "PERMISSION_DENIED", "Permission denied",
-                $"Your role ({user.Role}) can't {Perm.Label(perm)}. Ask your {(user.Role == "Recruiter" ? "Team Lead" : "Delivery Manager")} if you need this access.");
+                $"Your role ({RoleNames.Label(user.Role)}) can't {Perm.Label(perm)}. Ask your {Perm.AskWho(user.Role)} if you need this access.");
             return;
         }
         await _default.HandleAsync(next, ctx, policy, result);

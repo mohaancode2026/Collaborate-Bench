@@ -100,6 +100,12 @@ public static class ServiceRegistration
         services.AddScoped<MicrosoftAuth>();
         services.AddScoped<MailSender>();
         services.AddScoped<VendorDiscovery>();
+        // AI Inbox: triages each user's Outlook Inbox during the mail sync.
+        services.Configure<InboxOptions>(cfg.GetSection("Inbox"));
+        services.AddScoped<InboxTriage>();
+        services.AddSingleton<ResumeStore>();
+        services.AddScoped<ResumeFiles>();
+        services.AddScoped<MailSignatureService>();
         services.AddSingleton<MailSync>();
         services.AddHostedService(sp => sp.GetRequiredService<MailSync>());
         services.AddHttpClient("microsoft", c => c.Timeout = TimeSpan.FromSeconds(60));

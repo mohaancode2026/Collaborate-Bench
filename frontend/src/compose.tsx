@@ -1,21 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AiText, api, Consultant, EmailTemplate, MailConnection, postForm, RenderResult, Requirement, VendorEmail } from './api';
 import { useAuth } from './auth';
-import { Alert, Field, FieldErrors, Modal, Spinner, useErrorHandler, useToast } from './ui';
+import { Alert, copyText, Field, FieldErrors, Modal, Spinner, useErrorHandler, useToast } from './ui';
 
 interface Contact { address: string; name?: string | null; vendorId: number; vendor: string; lastContactUtc?: string | null; }
 export interface ComposeInitial { to?: string; cc?: string; subject?: string; body?: string; }
+interface SigInfo { signature: string; custom: boolean; default: string; source: 'custom' | 'outlook' | 'default'; outlook?: string | null; htmlPreview?: string | null; }
 
 const MAX_BYTES = 3 * 1024 * 1024;
 const BLOCKED = /\.(exe|bat|cmd|com|msi|ps1|vbs|js|jar|scr|dll|reg|lnk|hta|iso)$/i;
+/** Company names compared loosely: "Kforce Inc." and "KFORCE" match. */
+const norm = (s?: string | null) => (s ?? '').toLowerCase().replace(/\b(inc|llc|ltd|corp|corporation|co|technologies|solutions|group)\b\.?/g, '').replace(/[^a-z0-9]/g, '');
 const size = (b: number) => (b < 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1024 / 1024).toFixed(1)} MB`);
 
 /** Write an email to a vendor and send it from the user's own Outlook (new email, or a reply inside a tracked thread). */
 /** templateCategory: start with the best template of that category (e.g. "Follow-up"); consultantId fills its consultant fields. */
-export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCategory, consultantId, initialFiles }: {
+export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCategory, consultantId, initialFiles, vendorHint, title, replyToInboxItemId }: {
   initial?: ComposeInitial; replyTo?: VendorEmail; onClose: () => void; onSent?: () => void; templateCategory?: string; consultantId?: number | null;
+  /** Reply inside the thread of this AI Inbox email (it's marked done once sent). */
+  replyToInboxItemId?: number;
   /** Files attached when the window opens, e.g. a tailored resume. */
   initialFiles?: File[];
+  /** A company name (e.g. the job's poster): shows that vendor's contacts, and fills "To" with the latest one when it's empty. */
+  vendorHint?: string;
+  title?: string;
 }) {
   const { scope } = useAuth();
   const notify = useToast();
@@ -37,12 +45,63 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
   const [reqs, setReqs] = useState<Requirement[]>([]);
   const [pick, setPick] = useState({ consultantId: '', requirementId: '' });
   const [writing, setWriting] = useState(false);
+  // Signature: added at the bottom of the message; editable and saved for next time.
+  const [sig, setSig] = useState('');
+  const [useSig, setUseSig] = useState(true);
+  const [sigEdit, setSigEdit] = useState<string | null>(null);
+  const [sigSaving, setSigSaving] = useState(false);
+  /** Where the signature comes from: your Outlook (read from your sent mail), one you saved here, or the default. */
+  const [sigInfo, setSigInfo] = useState<SigInfo | null>(null);
+  /** The message with the signature at the bottom (once). Skipped when the text already ends with the sender's name. */
+  const withSig = (text: string, s = sig) => {
+    if (!s || !useSig) return text;
+    const t = text.trimEnd();
+    const nameLine = s.split('\n').map(x => x.trim()).filter(Boolean)[1] ?? '';
+    if (t.includes(s.trim()) || (nameLine && t.slice(-120).includes(nameLine))) return text;
+    return `${t}${t ? '\n\n' : ''}${s}`;
+  };
+  const withoutSig = (text: string, s = sig) => (s && text.includes(s) ? text.replace(`\n\n${s}`, '').replace(s, '').trimEnd() : text);
 
   useEffect(() => {
     api<MailConnection>('/mail/connection').then(setConn).catch(e => { onError(e); onClose(); });
-    api<Contact[]>('/mail/contacts').then(setContacts).catch(() => setContacts([]));
+    api<Contact[]>('/mail/contacts').then(list => {
+      setContacts(list);
+      const hint = norm(vendorHint);
+      if (!hint) return;
+      const match = list.find(c => { const v = norm(c.vendor); return v.length > 2 && (v.includes(hint) || hint.includes(v)); });
+      if (!match) return;
+      setVendorId(String(match.vendorId));
+      const latest = list.filter(c => c.vendorId === match.vendorId).sort((a, b) => (b.lastContactUtc ?? '').localeCompare(a.lastContactUtc ?? ''))[0];
+      if (latest) setTo(t => t.trim() || latest.address);
+    }).catch(() => setContacts([]));
     api<EmailTemplate[]>('/mail/templates').then(setTemplates).catch(() => setTemplates([]));
+    api<SigInfo>('/mail/signature').then(r => { setSigInfo(r); setSig(r.signature); setBody(b => withSig(b, r.signature)); }).catch(() => setSig(''));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleSig = (on: boolean) => { setUseSig(on); setBody(b => (on ? (b.includes(sig) ? b : `${b.trimEnd()}${b.trim() ? '\n\n' : ''}${sig}`) : withoutSig(b))); };
+  const saveSig = async () => {
+    if (sigEdit === null) return;
+    setSigSaving(true);
+    try {
+      const r = await api<SigInfo>('/mail/signature', { method: 'PUT', body: { signature: sigEdit } });
+      setBody(b => withSig(withoutSig(b), r.signature));   // swap the old signature for the new one
+      setSig(r.signature); setSigInfo(r); setSigEdit(null);
+      notify('success', r.source === 'custom' ? 'Signature saved' : r.source === 'outlook' ? 'Using your Outlook signature' : 'Using the default signature',
+        r.source === 'custom' ? 'It will be added to your emails from now on.' : undefined);
+    } catch (e) { onError(e); }
+    finally { setSigSaving(false); }
+  };
+
+  /** Re-read the signature from Outlook (after changing it there), or switch from a saved one back to Outlook's. */
+  const useOutlookSig = async (refresh: boolean) => {
+    setSigSaving(true);
+    try {
+      const r = refresh ? await api<SigInfo>('/mail/signature/refresh', { method: 'POST' }) : await api<SigInfo>('/mail/signature', { method: 'PUT', body: { signature: '' } });
+      setBody(b => withSig(withoutSig(b), r.signature)); setSig(r.signature); setSigInfo(r); setSigEdit(null);
+      notify(r.source === 'outlook' ? 'success' : 'info', r.source === 'outlook' ? 'Outlook signature added' : 'No Outlook signature found',
+        r.source === 'outlook' ? undefined : "Your recent Outlook emails don't share a signature yet, so the default one is used. You can edit it here.");
+    } catch (e) { onError(e); } finally { setSigSaving(false); }
+  };
 
   const selected = templates.find(t => String(t.id) === tplId);
   const needsConsultant = tplId === 'ai' || !!selected?.needs.includes('consultant');
@@ -81,7 +140,7 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
           templateId: t.id, consultantId: p.consultantId ? Number(p.consultantId) : undefined,
           requirementId: p.requirementId ? Number(p.requirementId) : undefined, to } });
         if (!replyTo) setSubject(r.subject);
-        setBody(r.body);
+        setBody(withSig(r.body));
         setUsedTemplate(t.id);
         if (r.missing.length) notify('warning', 'Some fields are empty', `${r.missing.map(k => `{{${k}}}`).join(', ')} couldn't be filled in. Edit them before sending.`);
       } catch (e) { onError(e); }
@@ -93,7 +152,7 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
       const pitch = await api<AiText>('/ai/pitch', { method: 'POST', body: { consultantId: Number(p.consultantId), requirementId: Number(p.requirementId) } });
       const c = cons.find(x => String(x.id) === p.consultantId), r = reqs.find(x => String(x.id) === p.requirementId);
       if (!replyTo) setSubject(`Submission: ${c?.name} for ${r?.title}${r?.client ? ` (${r.client})` : ''}`);
-      setBody(pitch.text);
+      setBody(withSig(pitch.text));
       setUsedTemplate(null);
       if (pitch.notice) notify('info', 'Built-in writer used', pitch.notice);
     } catch (e) { onError(e); }
@@ -131,6 +190,7 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
     if (usedTemplate) fd.set('templateId', String(usedTemplate));
     fd.set('to', to); fd.set('cc', cc); fd.set('subject', subject); fd.set('body', body);
     if (replyTo) fd.set('replyToEmailId', String(replyTo.id));
+    else if (replyToInboxItemId) fd.set('replyToInboxItemId', String(replyToInboxItemId));
     files.forEach(f => fd.append('files', f, f.name));
     try {
       const r = await postForm<{ sent: boolean; tracked: boolean }>('/mail/send', fd);
@@ -145,9 +205,12 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
   const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body.slice(0, 1800))}`;
 
   return (
-    <Modal wide title={replyTo ? `Reply · ${replyTo.subject}` : 'New email to vendor'} onClose={onClose}
+    <Modal wide title={replyTo ? `Reply · ${replyTo.subject}` : title ?? 'New email to vendor'} onClose={onClose}
       footer={<>
         {conn && !ready && to && <a className="btn btn-outline" style={{ marginRight: 'auto' }} href={mailto}>Use my mail app instead</a>}
+        {/* Approve-then-send: the draft can also be copied into Outlook instead of being sent from here. */}
+        <button className="btn btn-outline" style={conn && !ready && to ? undefined : { marginRight: 'auto' }}
+          onClick={() => copyText(`To: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${subject}\n\n${body}`, notify)}>Copy for Outlook</button>
         <button className="btn btn-outline" onClick={onClose}>Cancel</button>
         <button className="btn btn-primary" onClick={send} disabled={busy || !ready || total > MAX_BYTES}>{busy ? <Spinner /> : 'Send from Outlook'}</button></>}>
       {!conn ? <div className="empty"><Spinner dark /> Loading…</div> : <>
@@ -175,6 +238,7 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
         </div>
 
         <Field label="To *" error={errors.to}><input className="inp" value={to} onChange={e => setTo(e.target.value)} placeholder="recruiter@vendor.com, …" /></Field>
+        {!to.trim() && vendorHint && <p className="muted" style={{ fontSize: 12.5, margin: '-6px 0 10px' }}>Add the {vendorHint} recruiter's email. Nothing matched {vendorHint} in your vendor list or the posting.</p>}
         {contacts.length > 0 && <div className="flex" style={{ margin: '-6px 0 12px' }}>
           {vendors.length > 1 && <select className="inp" style={{ width: 'auto', padding: '4px 8px', fontSize: 12.5 }} value={vendorId} onChange={e => setVendorId(e.target.value)} aria-label="Vendor contacts">
             <option value="">All vendors</option>{vendors.map(([id, n]) => <option key={id} value={id}>{n}</option>)}</select>}
@@ -184,6 +248,25 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
         {!replyTo && <Field label="Subject *" error={errors.subject}><input className="inp" value={subject} onChange={e => setSubject(e.target.value)} /></Field>}
         <Field label="Message *" error={errors.body}><textarea className="inp" style={{ minHeight: 200 }} value={body} onChange={e => setBody(e.target.value)} />
           {replyTo && <small className="muted">The original email is quoted below your message.</small>}</Field>
+        {sig && <div className="sig-row">
+          <label className="check" style={{ margin: 0 }}><input type="checkbox" checked={useSig} onChange={e => toggleSig(e.target.checked)} />
+            <span>{sigInfo?.source === 'outlook' ? 'Add my Outlook signature' : 'Add my signature'}</span></label>
+          {sigInfo?.source === 'outlook' && <small className="muted">{sigInfo.htmlPreview ? 'Sent with its logos and formatting, as in Outlook.' : 'Same as the one Outlook puts on your emails.'}</small>}
+          {sigInfo?.source === 'custom' && sigInfo.outlook && <button type="button" className="btn btn-sm" style={{ color: 'var(--primary)' }} onClick={() => useOutlookSig(false)} disabled={sigSaving}>Use my Outlook signature</button>}
+          {sigInfo?.source !== 'custom' && <button type="button" className="btn btn-sm" style={{ color: 'var(--primary)' }} onClick={() => useOutlookSig(true)} disabled={sigSaving}
+            title="Changed your signature in Outlook? Read it again">↻ Re-read from Outlook</button>}
+          {sigEdit === null && <button type="button" className="btn btn-sm" style={{ color: 'var(--primary)' }} onClick={() => setSigEdit(sig)}>Edit signature</button>}
+        </div>}
+        {/* What the recipient sees: the Outlook signature with its images. Sandboxed: it's HTML from your own sent mail. */}
+        {useSig && sigInfo?.source === 'outlook' && sigInfo.htmlPreview && sigEdit === null && (
+          <iframe className="sig-preview" title="Signature preview" sandbox="" srcDoc={`<!doctype html><meta charset="utf-8"><style>body{margin:8px;font:13px Calibri,Arial,sans-serif;color:#111}img{max-width:100%;height:auto}</style>${sigInfo.htmlPreview}`} />)}
+        {sigEdit !== null && <div className="sig-edit">
+          <Field label="Your signature (saved for all your emails)"><textarea className="inp" style={{ minHeight: 100 }} value={sigEdit} onChange={e => setSigEdit(e.target.value)}
+            placeholder={'Thanks & Regards,\nYour name\nTitle | Company\nPhone | Email'} /></Field>
+          <div className="flex"><button type="button" className="btn btn-sm btn-primary" onClick={saveSig} disabled={sigSaving}>{sigSaving ? <Spinner /> : 'Save signature'}</button>
+            <button type="button" className="btn btn-sm btn-outline" onClick={() => setSigEdit(null)}>Cancel</button>
+            <small className="muted">Leave it empty to use your Outlook signature again.</small></div>
+        </div>}
         <Field label="Attachments (resume, RTR…)" error={errors.files}>
           <input type="file" multiple onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
           {files.length > 0 && <div style={{ marginTop: 6 }}>{files.map(f => (

@@ -15,7 +15,7 @@ namespace CollaborateBench.Api.Controllers;
 public sealed class UsersController(AppDbContext db, DataService data, ICurrentUser me, AuditService audit) : ControllerBase
 {
     private static readonly PasswordHasher<string> Hasher = new();
-    private static readonly Dictionary<string, byte> RoleIds = new() { ["Admin"] = 1, ["Delivery Manager"] = 2, ["Team Lead"] = 3, ["Recruiter"] = 4 };
+    private static readonly Dictionary<string, byte> RoleIds = new() { ["Admin"] = 1, ["Delivery Manager"] = 2, ["Team Lead"] = 3, ["Recruiter"] = 4, ["Manager"] = 5 };
 
     /// <summary>Users you may see, with their workload (consultants, active submissions, placements).</summary>
     [HttpGet, RequirePerm("team.view")]
@@ -53,17 +53,18 @@ public sealed class UsersController(AppDbContext db, DataService data, ICurrentU
             .Check(Validator.IsEmail(email), "email", "Enter a valid work email")
             .Check(RoleIds.ContainsKey(role), "role", "Choose a role");
         if (me.Role != "Admin")
-            v.Check(role is "Team Lead" or "Recruiter", "role", "Only an Admin can create Admins or Delivery Managers");
+            v.Check(role is "Manager" or "Team Lead" or "Recruiter", "role", "Only an Admin can create Admins or Directors of Sales");
         v.ThrowIfInvalid();
 
         v.Check(!await db.Users.AnyAsync(u => u.Email == email && u.UserId != (editingId ?? 0)), "email", "Another user already has this email");
         var manager = input.ManagerId is int mid
             ? await db.Users.AsNoTracking().Where(u => u.UserId == mid && u.IsActive).Select(u => new { u.Role.Name, u.TeamId }).FirstOrDefaultAsync()
             : null;
-        if (role == "Recruiter") v.Check(manager?.Name == "Team Lead", "managerId", "A Recruiter must report to an active Team Lead");
+        if (role == "Recruiter") v.Check(manager?.Name == "Team Lead", "managerId", "A Bench Sales Executive must report to an active Team Lead");
+        if (role == "Manager") v.Check(manager?.Name == "Delivery Manager", "managerId", "A Technical Coordinator must report to an active Director of Sales");
         if (role == "Team Lead")
         {
-            v.Check(manager?.Name == "Delivery Manager", "managerId", "A Team Lead must report to an active Delivery Manager");
+            v.Check(manager?.Name == "Delivery Manager", "managerId", "A Team Lead must report to an active Director of Sales");
             v.Check(!string.IsNullOrWhiteSpace(input.Team), "team", "Give the team a name");
         }
         v.Check(input.ManagerId is null || input.ManagerId != editingId, "managerId", "A user can't report to themselves");
@@ -105,7 +106,7 @@ public sealed class UsersController(AppDbContext db, DataService data, ICurrentU
             { Errors = new Dictionary<string, string[]> { ["email"] = ["Another user already has this email"] } };
         }
         await RebuildHierarchyAsync();
-        await audit.LogAsync("USER_CREATE", $"Created {user.FullName} ({input.Role})", "User", user.UserId);
+        await audit.LogAsync("USER_CREATE", $"Created {user.FullName} ({RoleNames.Label(input.Role)})", "User", user.UserId);
         return new { id = user.UserId, temporaryPassword = temp, message = "Share the temporary password securely. The user must change it at first sign-in." };
     }
 
@@ -116,7 +117,7 @@ public sealed class UsersController(AppDbContext db, DataService data, ICurrentU
     {
         var user = await db.Users.Include(u => u.Role).FirstOrDefaultAsync(u => u.UserId == id) ?? throw AppException.NotFound("User");
         if (id == me.RequiredId && (input.Active == false || input.Role != user.Role.Name))
-            throw AppException.Bad("CANNOT_MODIFY_SELF", "You can't change your own access", "Ask another Delivery Manager or an Admin to change your role or deactivate you.");
+            throw AppException.Bad("CANNOT_MODIFY_SELF", "You can't change your own access", "Ask another Director of Sales or an Admin to change your role or deactivate you.");
         if (user.Role.Name == "Admin" && me.Role != "Admin") throw AppException.Forbidden("Only an Admin can change another Admin.");
 
         var (roleId, teamId) = await ValidateAsync(input, id);
@@ -144,7 +145,7 @@ public sealed class UsersController(AppDbContext db, DataService data, ICurrentU
         }
         await RebuildHierarchyAsync();
         await audit.LogAsync(deactivate ? "USER_DEACTIVATE" : "USER_UPDATE",
-            $"{(deactivate ? "Deactivated" : "Updated")} {user.FullName} ({input.Role}){(deactivate ? "; records reassigned to their manager" : "")}", "User", id);
+            $"{(deactivate ? "Deactivated" : "Updated")} {user.FullName} ({RoleNames.Label(input.Role)}){(deactivate ? "; records reassigned to their manager" : "")}", "User", id);
         return NoContent();
     }
 

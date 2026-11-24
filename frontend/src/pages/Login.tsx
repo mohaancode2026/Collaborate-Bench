@@ -6,10 +6,10 @@ import { Brand, Icon } from '../Layout';
 import { Alert, Avatar, Field, FieldErrors, Spinner, useToast } from '../ui';
 
 const DEMO = [
-  ['System Admin', 'admin@collabbench.io', 'Admin'], ['Priya Sharma', 'priya@collabbench.io', 'Delivery Manager'],
+  ['System Admin', 'admin@collabbench.io', 'Admin'], ['Priya Sharma', 'priya@collabbench.io', 'Director of Sales'],
   ['Arjun Reddy', 'arjun@collabbench.io', 'Team Lead · Alpha'], ['Kavya Nair', 'kavya@collabbench.io', 'Team Lead · Beta'],
-  ['Megha Iyer', 'megha@collabbench.io', 'Recruiter · Alpha'], ['Sanjay Das', 'sanjay@collabbench.io', 'Recruiter · Beta'],
-  ['Vivek Rao', 'vivek@collabbench.io', 'Recruiter · deactivated'],
+  ['Megha Iyer', 'megha@collabbench.io', 'Bench Sales Executive · Alpha'], ['Sanjay Das', 'sanjay@collabbench.io', 'Bench Sales Executive · Beta'],
+  ['Vivek Rao', 'vivek@collabbench.io', 'Bench Sales Executive · deactivated'],
 ];
 
 export default function Login() {
@@ -25,10 +25,13 @@ export default function Login() {
   const [alert, setAlert] = useState<{ type: 'error' | 'warning' | 'info'; title: string; detail: string } | null>(null);
   const changing = !!user && (user.mustChangePassword || loc.state?.changePassword);
   const [microsoft, setMicrosoft] = useState(false);
+  // False = the company signs in with Outlook only; the password form is kept behind "Admin sign-in" (break-glass).
+  const [passwordOn, setPasswordOn] = useState(true);
+  const [adminForm, setAdminForm] = useState(false);
   const [msBusy, setMsBusy] = useState(false);
   const handled = useRef(false);
 
-  useEffect(() => { api<{ microsoft: boolean }>('/auth/providers').then(p => setMicrosoft(p.microsoft)).catch(() => {}); }, []);
+  useEffect(() => { api<{ microsoft: boolean; password?: boolean }>('/auth/providers').then(p => { setMicrosoft(p.microsoft); setPasswordOn(p.password !== false); }).catch(() => {}); }, []);
 
   // Back from Microsoft: ?ms=<one-time code> on success, ?msError=<reason> otherwise.
   useEffect(() => {
@@ -104,7 +107,7 @@ export default function Login() {
             </ul>
           </div>
           <div className="login-foot">
-            <span><Icon d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" size={14} /> Role-based access: recruiters see their own pipeline, leads see their team.</span>
+            <span><Icon d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" size={14} /> Role-based access: executives see their own pipeline, leads see their team.</span>
             <small>© {new Date().getFullYear()} Collaborate · Bench Sales</small>
           </div>
         </aside>
@@ -115,25 +118,26 @@ export default function Login() {
             {changing ? <ChangePassword voluntary={!!loc.state?.voluntary} onDone={async () => { await refresh(); nav('/dashboard', { replace: true }); }} /> : (
               <>
                 <h1>Welcome back</h1>
-                <p className="login-sub">{microsoft ? 'Sign in with your company Microsoft account, or with your email and password.' : 'Sign in with your work email and password.'}</p>
+                <p className="login-sub">{microsoft && !passwordOn ? 'Sign in with your company Outlook (Microsoft) account.' : microsoft ? 'Sign in with your company Microsoft account, or with your email and password.' : 'Sign in with your work email and password.'}</p>
                 {loc.state?.reason === 'signin' && !alert && <Alert type="info" title="Please sign in">Sign in to open the workspace.</Alert>}
                 {alert && <Alert type={alert.type} title={alert.title}>{alert.detail}</Alert>}
                 {microsoft && <>
                   <button type="button" className="btn btn-outline ms-btn" onClick={signInWithMicrosoft} disabled={msBusy}>
                     {msBusy ? <Spinner dark /> : <MicrosoftLogo />} Continue with Microsoft</button>
                   <p className="login-hint">Company accounts. Your emails with vendors are tracked automatically.</p>
-                  <div className="or"><span>or with email</span></div>
+                  {passwordOn ? <div className="or"><span>or with email</span></div>
+                    : !adminForm && <button type="button" className="login-link" style={{ display: 'block', margin: '14px auto 0', background: 'none', border: 0 }} onClick={() => setAdminForm(true)}>Admin sign-in with password</button>}
                 </>}
-                <form onSubmit={submit} noValidate>
+                {(passwordOn || !microsoft || adminForm) && <form onSubmit={submit} noValidate>
                   <Field label="Work email" error={errors.email}><input className="inp" type="email" autoComplete="username" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" autoFocus /></Field>
                   <Field label={<span className="flex between" style={{ width: '100%' }}>Password<a href="#" className="login-link"
-                    onClick={e => { e.preventDefault(); setAlert({ type: 'info', title: 'Forgot your password?', detail: 'Ask your Delivery Manager or admin to reset it from Team & Access. You will get a temporary password.' }); }}>Forgot password?</a></span>} error={errors.password}>
+                    onClick={e => { e.preventDefault(); setAlert({ type: 'info', title: 'Forgot your password?', detail: 'Ask your Director of Sales or admin to reset it from Team & Access. You will get a temporary password.' }); }}>Forgot password?</a></span>} error={errors.password}>
                     <div className="pw"><input className="inp" type={show ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" />
                       <button type="button" onClick={() => setShow(s => !s)} aria-label={show ? 'Hide password' : 'Show password'}>{show ? 'Hide' : 'Show'}</button></div>
                   </Field>
                   <button className="btn btn-primary login-submit" type="submit" disabled={busy}>{busy ? <Spinner /> : 'Sign in'}</button>
-                </form>
-                {import.meta.env.DEV && (
+                </form>}
+                {import.meta.env.DEV && (passwordOn || !microsoft || adminForm) && (
                   <details className="demo">
                     <summary><b>Demo accounts</b> <span className="muted">· password <span className="mono">Demo@123</span> · click one to fill in</span></summary>
                     <div className="demo-grid">{DEMO.map(([n, em, r]) => (

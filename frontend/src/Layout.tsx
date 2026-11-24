@@ -4,7 +4,9 @@ import { api, AiText } from './api';
 import { NAV } from './nav';
 import { useDueReminders } from './followups';
 import { useAutopilotCount } from './autopilotCount';
+import { useInboxWatch } from './inboxWatch';
 import { useAuth } from './auth';
+import { roleLabel } from './roles';
 import { Avatar, useErrorHandler, useToast } from './ui';
 
 /** The Collaborate swirl on its own (small spaces, e.g. the RTR page). */
@@ -33,6 +35,7 @@ export default function Layout() {
   const notify = useToast();
   const dueFollowUps = useDueReminders();
   const autopilotWaiting = useAutopilotCount();
+  const inbox = useInboxWatch();
 
   useEffect(() => { setSide(false); setMenu(false); }, [loc.pathname]);
   // Keep the current page's link visible when the menu is taller than the screen.
@@ -40,7 +43,7 @@ export default function Layout() {
   useEffect(() => { api<{ claude: boolean }>('/ai/status').then(setAi).catch(() => setAi(null)); }, []);
   if (!user) return null;
 
-  const groups = [...new Set(NAV.map(n => n.group))];
+  const groups = [...new Set(NAV.filter(n => !n.hidden).map(n => n.group))];
   return (
     <div id="app">
       <div className={`scrim${side ? ' open' : ''}`} onClick={() => setSide(false)} />
@@ -48,12 +51,13 @@ export default function Layout() {
         <Link className="brand" to="/" aria-label="Collaborate Bench Sales home"><Brand light height={30} /></Link>
         <nav className="nav">
           {groups.map(g => {
-            const items = NAV.filter(n => n.group === g && can(n.perm));
+            const items = NAV.filter(n => n.group === g && !n.hidden && can(n.perm));
             if (!items.length) return null;
             return (
               <div key={g}>
                 <div className="nav-g">{g}</div>
                 {items.map(n => <NavLink key={n.path} to={n.path} className={({ isActive }) => (isActive ? 'on' : '')}><Icon d={n.icon} />{n.label}
+                  {n.path === '/inbox' && !!inbox?.high && <span className="cnt due" title={`${inbox.high} high-priority email${inbox.high === 1 ? '' : 's'}`}>{inbox.high}</span>}
                   {n.path === '/autopilot' && autopilotWaiting > 0 && <span className="cnt due" title={`${autopilotWaiting} waiting for you in the Autopilot`}>{autopilotWaiting}</span>}
                   {n.path === '/vendor-mail' && dueFollowUps > 0 && <span className="cnt due" title={`${dueFollowUps} vendor follow-up${dueFollowUps === 1 ? '' : 's'} due`}>{dueFollowUps}</span>}</NavLink>)}
               </div>
@@ -79,12 +83,12 @@ export default function Layout() {
           <div className="umenu">
             <button id="ubtn" onClick={() => setMenu(m => !m)} aria-haspopup="true" aria-expanded={menu}>
               <Avatar name={user.name} size={32} />
-              <span className="un"><b>{user.name}</b><small>{user.role}{user.team ? ` · ${user.team}` : ''}</small></span>
+              <span className="un"><b>{user.name}</b><small>{roleLabel(user.role)}{user.team ? ` · ${user.team}` : ''}</small></span>
               <Icon d="M6 9l6 6 6-6" size={14} />
             </button>
             <div className={`udrop${menu ? ' open' : ''}`}>
               <div className="ud-h"><Avatar name={user.name} size={40} /><div><b>{user.name}</b><small>{user.email}</small>
-                <div><span className="tag v">{user.role}</span>{user.team && <span className="tag s">{user.team}</span>}</div></div></div>
+                <div><span className="tag v">{roleLabel(user.role)}</span>{user.team && <span className="tag s">{user.team}</span>}</div></div></div>
               <div className="ud-i"><span>Reports to</span><b>{user.managerName ?? '—'}</b></div>
               <div className="ud-i"><span>Data you can see</span><b>{user.dataScope === 'OWN' ? 'Your records' : user.dataScope === 'TEAM' ? 'You + your team' : 'Whole organization'}</b></div>
               <Link className="ud-l" to="/login" state={{ changePassword: true, voluntary: true }}>Change password</Link>

@@ -18,6 +18,13 @@ public sealed class SubmissionsController(AppDbContext db, DataService data, ICu
     [HttpGet, RequirePerm("pipeline.view")]
     public Task<List<SubmissionDto>> List([FromQuery] string? scope) => data.SubmissionsAsync(scope);
 
+    /// <summary>One page of the submissions grid: filtered, searched and sorted in the database (see <see cref="SubmissionPageQuery"/>).</summary>
+    [HttpGet("page"), RequirePerm("pipeline.view")]
+    public Task<SubmissionPage> Page([FromQuery] string? scope, [FromQuery] string? stage, [FromQuery] string? q, [FromQuery] int? owner,
+        [FromQuery] bool stale = false, [FromQuery] string? sort = null, [FromQuery] string? dir = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25,
+        CancellationToken ct = default) =>
+        data.SubmissionPageAsync(new SubmissionPageQuery(scope, stage, q, owner, stale, sort, dir, page, pageSize), ct);
+
     /// <summary>Submits a consultant with RTR. Rules live in SubmissionService; returns the submission plus non-blocking warnings.</summary>
     [HttpPost, RequirePerm("sub.create")]
     public async Task<object> Create(SubmissionInput input)

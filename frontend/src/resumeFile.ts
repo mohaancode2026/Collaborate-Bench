@@ -1,3 +1,18 @@
+import { ApiError, postForm } from './api';
+
+/**
+ * Stores the resume file itself on the server, with the consultant's original resume (the one just saved, or the newest).
+ * Returns null when stored, otherwise a short reason. The text is already saved, so a failure here isn't fatal.
+ */
+export async function storeResumeFile(consultantId: number, file: File, resumeId?: number): Promise<string | null> {
+  const fd = new FormData();
+  fd.set('consultantId', String(consultantId));
+  if (resumeId) fd.set('resumeId', String(resumeId));
+  fd.append('file', file, file.name);
+  try { await postForm('/resumes/source/file', fd); return null; }
+  catch (e) { return e instanceof ApiError ? e.detail : 'the upload failed.'; }
+}
+
 /** Extracts plain text from a resume file in the browser (PDF via pdf.js, DOCX via mammoth, TXT/MD as-is). */
 export async function fileToText(file: File): Promise<string> {
   const n = file.name.toLowerCase();

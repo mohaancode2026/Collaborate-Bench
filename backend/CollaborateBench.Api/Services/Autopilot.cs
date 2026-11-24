@@ -165,7 +165,7 @@ public sealed partial class AutopilotService(AppDbContext db, ResumeTailor tailo
         }
 
         // What we're submitting to.
-        ResumeTailor.Target target; string? description; RequirementDto reqDto;
+        ResumeTailor.Target target; string? description; RequirementDto reqDto; decimal? postedRate = null;
         if (item.RequirementId is int rid)
         {
             var r = await db.Requirements.AsNoTracking().FirstOrDefaultAsync(x => x.RequirementId == rid, ct);
@@ -182,7 +182,10 @@ public sealed partial class AutopilotService(AppDbContext db, ResumeTailor tailo
             reqDto = JobText.AsRequirement(j);
             target = new(j.Title, j.Company, j.Skills, j.Description, j.Location, reqDto.Mode);
             description = j.Description;
-            item.BillRate = j.MaxHourly; item.ContractType = reqDto.Type;
+            // A job board's pay figure is what the employer pays, not the vendor's bill rate. Only use it when it leaves a margin.
+            postedRate = j.MaxHourly;
+            item.BillRate = j.MaxHourly is > 0 && (c.PayRate <= 0 || j.MaxHourly >= c.PayRate) ? j.MaxHourly : null;
+            item.ContractType = reqDto.Type;
         }
 
         // 1) Tailored resume (truth-checked against the original).
@@ -201,9 +204,14 @@ public sealed partial class AutopilotService(AppDbContext db, ResumeTailor tailo
         await db.SaveChangesAsync(ct);
         item.TailoredResumeId = version.TailoredResumeId;
 
-        // 2) Rates: pay from the profile; submit suggested between pay and bill when the bill rate is known.
+        // 2) Rates: pay from the profile; submit suggested between pay and bill when the bill rate is known and leaves a margin.
         item.PayRate = c.PayRate > 0 ? c.PayRate : null;
-        item.SubmitRate = item.BillRate is > 0 && c.PayRate > 0 ? Matching.SuggestRate(c.PayRate, item.BillRate.Value) : null;
+        item.SubmitRate = item.BillRate is > 0 && c.PayRate > 0 ? Matching.TrySuggestRate(c.PayRate, item.BillRate.Value) : null;
+        string? rateProblem = null;
+        if (c.PayRate > 0 && item.RequirementId is null && item.BillRate is null && postedRate is > 0 and decimal posted)
+            rateProblem = Matching.NoMarginMessage(c.PayRate, posted, fromJobPosting: true);
+        else if (c.PayRate > 0 && item.BillRate is > 0 && item.SubmitRate is null)
+            rateProblem = Matching.NoMarginMessage(c.PayRate, item.BillRate.Value, fromJobPosting: item.RequirementId is null);
 
         // 3) Vendor contact: the last person at this vendor who emailed the team, or an address in the posting.
         string? contactName = null;
@@ -231,7 +239,10 @@ public sealed partial class AutopilotService(AppDbContext db, ResumeTailor tailo
         item.Status = "Prepared";
         Notify(item.OwnerUserId, "approval", $"{c.FullName} → {item.JobTitle}{(string.IsNullOrWhiteSpace(item.Client) ? "" : $" ({item.Client})")} · {item.Score}% match" +
             (res.Warnings.Count > 0 ? $" · check {res.Warnings.Count} resume item(s)" : ""), "/autopilot?tab=approval", item.AutopilotItemId);
-        item.Error = res.Warnings.Count > 0 ? $"Check {res.Warnings.Count} item(s) flagged in the tailored resume before approving." : null;
+        var notes = new List<string>();
+        if (rateProblem != null) notes.Add(rateProblem);
+        if (res.Warnings.Count > 0) notes.Add($"Check {res.Warnings.Count} item(s) flagged in the tailored resume before approving.");
+        item.Error = notes.Count > 0 ? string.Join(" ", notes) : null;
         item.UpdatedUtc = DateTime.UtcNow;
         return true;
     }
@@ -257,9 +268,13 @@ public sealed partial class AutopilotService(AppDbContext db, ResumeTailor tailo
             .Check(!string.IsNullOrWhiteSpace(input.EmailBody) && input.EmailBody.Length <= 20000, "emailBody", "Write the email to the vendor")
             .Check(input.PayRate is > 0, "payRate", "Enter the consultant's pay rate")
             .Check(input.SubmitRate is > 0, "submitRate", "Enter the submit rate")
-            .Check(input.SubmitRate > input.PayRate, "submitRate", "Must be higher than the pay rate")
             .Check(bill is >= 10 and <= 400, "billRate", "Enter the bill rate ($10–$400/hr). Job boards rarely show it; use the vendor's figure.")
-            .Check(bill is null || input.SubmitRate <= bill, "submitRate", $"Can't exceed the ${bill:0}/hr bill rate")
+            // Say plainly when no submit rate can work, instead of two errors that contradict each other.
+            .Check(bill is null || input.PayRate is not > 0 || bill >= input.PayRate, "billRate",
+                bill is decimal b && input.PayRate is decimal p ? Matching.NoMarginMessage(p, b, fromJobPosting: external) : "")
+            // At the pay rate (no margin) is allowed; below it isn't.
+            .Check(input.SubmitRate >= input.PayRate, "submitRate", "Can't be below the pay rate")
+            .Check(bill is null || input.PayRate > bill || input.SubmitRate <= bill, "submitRate", $"Can't exceed the ${bill:0}/hr bill rate")
             .Check(!external || (input.ContractType != null && Domain.ContractTypes.Contains(input.ContractType)), "contractType", "Choose C2C, W2 or 1099");
         v.ThrowIfInvalid();
         if (item.TailoredResumeId is null) throw AppException.Conflict("NO_RESUME", "No tailored resume", "This submission has no tailored resume yet. Let the Autopilot prepare it first.");

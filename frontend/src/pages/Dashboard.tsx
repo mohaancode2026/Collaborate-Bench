@@ -1,11 +1,13 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { AiText, api, AutopilotSummary, Dashboard as D, download, RecruiterStat } from '../api';
+import { Link, useNavigate } from 'react-router-dom';
+import { AiText, api, AutopilotSummary, Dashboard as D, download, InboxHome, InboxTask, RecruiterStat } from '../api';
 import { useAuth } from '../auth';
+import { roleLabel } from '../roles';
 import { SubmitDialog } from '../components';
 import { Icon, SPARK } from '../Layout';
 import { useDueReminders } from '../followups';
 import { AiBadge, Avatar, Empty, Ring, Spinner, ago, money, useErrorHandler } from '../ui';
+import { TaskRow } from './Inbox';
 
 export default function Dashboard() {
   const { user, scope, can } = useAuth();
@@ -25,6 +27,8 @@ export default function Dashboard() {
   if (failed) return <div className="card"><Empty><b>The dashboard couldn't load.</b><div className="mt"><button className="btn btn-primary" onClick={load}>Try again</button></div></Empty></div>;
   if (!d) return <Empty><Spinner dark /> Loading dashboard…</Empty>;
   const max = Math.max(1, ...d.stages.map(s => s.count));
+  // Weekly gross margin is for Admin, Delivery Manager and Manager; Team Leads and recruiters don't see it here.
+  const showMargin = d.weeklyMargin != null && user?.role !== 'Team Lead' && user?.role !== 'Recruiter';
 
   return (
     <>
@@ -43,10 +47,12 @@ export default function Dashboard() {
         <div className="card kpi dark"><small>Consultants on bench</small><b>{d.bench}</b><span className="trend">{d.marketing} actively marketing</span></div>
         <div className="card kpi"><small>Open requirements</small><b>{d.openRequirements}</b><span className="trend">{d.requirementsToday} added today</span></div>
         <div className="card kpi"><small>Active submissions</small><b>{d.activeSubmissions}</b><span className="trend">{d.inInterviewOrOffer} in interview / offer</span></div>
-        {d.weeklyMargin != null
-          ? <div className="card kpi"><small>Weekly gross margin</small><b>{money(d.weeklyMargin)}</b><span className="trend">{d.billing} billing</span></div>
+        {showMargin
+          ? <div className="card kpi"><small>Weekly gross margin</small><b>{money(d.weeklyMargin ?? 0)}</b><span className="trend">{d.billing} billing</span></div>
           : <div className="card kpi"><small>Placements</small><b>{d.billing}</b><span className="trend">consultants billing</span></div>}
       </div>
+
+      {can('mail.view') && <HomeTasks />}
 
       {can('pipeline.view') && <AutopilotCard />}
 
@@ -66,7 +72,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {d.byRecruiter?.length > 0 && <RecruiterTable initial={d.byRecruiter} scope={scope} onError={onError} />}
+      {d.byRecruiter?.length > 0 && <RecruiterTable initial={d.byRecruiter} scope={scope} onError={onError} hideMargin={!showMargin} />}
 
       <div className="grid g21 mt2">
         <div className="card"><div className="card-h"><h3>Top AI matches not yet submitted</h3><Link className="btn btn-sm btn-outline" to="/match">Open Match Agent</Link></div><div className="card-b">
@@ -111,7 +117,7 @@ function rangeDates(key: RangeKey, custom: { from: string; to: string }): { from
 }
 
 /** Recruiter-wise report (Admin / Delivery Manager / Team Lead) with a date range. Each name opens that recruiter's submissions. */
-function RecruiterTable({ initial, scope, onError }: { initial: RecruiterStat[]; scope: string; onError: (e: unknown) => void }) {
+function RecruiterTable({ initial, scope, onError, hideMargin }: { initial: RecruiterStat[]; scope: string; onError: (e: unknown) => void; hideMargin?: boolean }) {
   const [range, setRange] = useState<RangeKey>(() => { try { return (sessionStorage.getItem('cbs.recRange') as RangeKey) || 'all'; } catch { return 'all'; } });
   const [custom, setCustom] = useState(() => { const t = new Date(); return { from: ymd(new Date(t.getFullYear(), t.getMonth(), 1)), to: ymd(t) }; });
   const [rows, setRows] = useState<RecruiterStat[]>(initial);
@@ -137,7 +143,7 @@ function RecruiterTable({ initial, scope, onError }: { initial: RecruiterStat[];
   const fmt = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   const caption = range === 'all' ? 'all time' : from && to ? `${fmt(from)} – ${fmt(new Date(to.getTime() - 1))}` : '';
   const stageCols: [string, string][] = [['Submitted', 'Submitted'], ['Vendor Screen', 'Vendor screen'], ['Client Interview', 'Interview'], ['Offer', 'Offer'], ['MSA / PO', 'MSA / PO']];
-  const showMargin = rows.some(r => r.weeklyMargin != null);
+  const showMargin = !hideMargin && rows.some(r => r.weeklyMargin != null);
   const n = (r: RecruiterStat, stage: string) => r.stages.find(s => s.stage === stage)?.count ?? 0;
   const cell = (v: number) => <td className="mono" style={{ textAlign: 'center', color: v ? undefined : 'var(--muted)' }}>{v}</td>;
   const total = (f: (r: RecruiterStat) => number) => rows.reduce((a, r) => a + f(r), 0);
@@ -154,7 +160,7 @@ function RecruiterTable({ initial, scope, onError }: { initial: RecruiterStat[];
   return (
     <div className="card mt2">
       <div className="card-h" style={{ flexWrap: 'wrap', gap: 10 }}>
-        <div><h3>Recruiter-wise submissions</h3><small className="muted">Submissions created {caption}{loading && ' · updating…'} · bench is the current count</small></div>
+        <div><h3>Executive-wise submissions</h3><small className="muted">Submissions created {caption}{loading && ' · updating…'} · bench is the current count</small></div>
         <div className="flex" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <select className="inp" style={{ width: 'auto' }} aria-label="Date range" value={range} onChange={e => setRange(e.target.value as RangeKey)}>
             {RANGES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
@@ -173,7 +179,7 @@ function RecruiterTable({ initial, scope, onError }: { initial: RecruiterStat[];
       {badCustom && <div className="card-b" style={{ paddingBottom: 0 }}><span className="tag r">Pick a start date that is on or before the end date.</span></div>}
       <div className="tw" style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .15s' }}><table>
         <thead><tr>
-          <th>Recruiter</th><th style={c}>Bench</th><th style={c}>Total</th>
+          <th>Bench Sales Executive</th><th style={c}>Bench</th><th style={c}>Total</th>
           {stageCols.map(([, label]) => <th key={label} style={c}>{label}</th>)}
           <th style={c}>Active</th><th style={c}>Placed</th><th style={c}>Stuck 3d+</th>
           {showMargin && <th style={{ textAlign: 'right' }}>Margin / wk</th>}
@@ -184,7 +190,7 @@ function RecruiterTable({ initial, scope, onError }: { initial: RecruiterStat[];
             <tr key={r.userId}>
               <td><div className="flex" style={{ gap: 8, flexWrap: 'nowrap' }}><Avatar name={r.name} size={28} />
                 <div style={{ minWidth: 0 }}><Link to={`/pipeline?owner=${r.userId}`}><b>{r.name}</b></Link>
-                  <br /><small className="muted">{r.role}{r.team ? ` · ${r.team}` : ''}</small></div></div></td>
+                  <br /><small className="muted">{roleLabel(r.role)}{r.team ? ` · ${r.team}` : ''}</small></div></div></td>
               {cell(r.bench)}
               <td className="mono" style={c}><b>{r.total}</b></td>
               {stageCols.map(([stage]) => <Fragment key={stage}>{cell(n(r, stage))}</Fragment>)}
@@ -249,6 +255,40 @@ function AutopilotCard() {
                 </Link>))}
             </div>}
         {attention > 0 && <Link to="/autopilot?tab=attention" className="dash-ap-warn">⚠ {attention} need attention (missing resume or a failed send). Review →</Link>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The executive's home: tasks from the AI Inbox with their due time (each reminder opens a ready draft), and upcoming
+ * interviews: yours, plus your team's for Team Leads. A full calendar view comes later.
+ */
+function HomeTasks() {
+  const nav = useNavigate();
+  const onError = useErrorHandler();
+  const [h, setH] = useState<InboxHome | null>(null);
+  const load = useCallback(() => { api<InboxHome>('/inbox/home').then(setH).catch(() => setH({ tasks: [], interviews: [], overdue: 0 })); }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60_000);
+    window.addEventListener('cbs:inbox', load);
+    return () => { clearInterval(t); window.removeEventListener('cbs:inbox', load); };
+  }, [load]);
+  const done = async (t: InboxTask) => { try { await api(`/inbox/tasks/${t.id}`, { method: 'PUT', body: { status: t.status === 'Open' ? 'Done' : 'Open' } }); load(); } catch (e) { onError(e); } };
+  const edit = () => nav('/inbox?view=tasks');
+  if (!h) return null;
+  return (
+    <div className="grid g2 mt2 home-tasks">
+      <div className="card">
+        <div className="card-h"><h3>My tasks {h.overdue > 0 && <span className="tag r">{h.overdue} overdue</span>}</h3><Link className="btn btn-sm btn-outline" to="/inbox?view=tasks">All tasks</Link></div>
+        <div className="card-b">{h.tasks.length === 0 ? <p className="muted" style={{ margin: 0 }}>Nothing due. Follow-ups and tasks from your emails show up here with their due time.</p>
+          : h.tasks.map(t => <TaskRow key={t.id} t={t} onToggle={() => done(t)} onEdit={edit} onDone={load} onOpenEmail={t.inboxItemId ? () => nav(`/inbox?open=${t.inboxItemId}`) : undefined} />)}</div>
+      </div>
+      <div className="card">
+        <div className="card-h"><h3>Upcoming interviews</h3><Link className="btn btn-sm btn-outline" to="/inbox?view=interviews">Interview emails</Link></div>
+        <div className="card-b">{h.interviews.length === 0 ? <p className="muted" style={{ margin: 0 }}>No interviews scheduled. Interview requests from vendors appear here as "Interview to schedule".</p>
+          : h.interviews.map(t => <TaskRow key={t.id} t={t} showOwner onToggle={() => done(t)} onEdit={edit} onDone={load} onOpenEmail={t.inboxItemId ? () => nav(`/inbox?open=${t.inboxItemId}`) : undefined} />)}</div>
       </div>
     </div>
   );

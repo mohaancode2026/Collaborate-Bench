@@ -1,11 +1,11 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { api, Consultant, ExternalJob, ExternalSearchResult, JobFeedStatus, Match, Requirement, Submission } from '../api';
+import { Link, useSearchParams } from 'react-router-dom';
+import { api, ApiError, Consultant, ExternalJob, ExternalSearchResult, fetchFile, JobFeedStatus, Match, Requirement, Submission } from '../api';
 import { useAuth } from '../auth';
-import { suggest } from '../components';
+import { noMargin, rateCheck, rateColor, suggest } from '../components';
 import { ComposeDialog } from '../compose';
 import { AiText } from '../api';
-import { Alert, Avatar, Empty, Field, FieldErrors, Modal, Ring, Spinner, ago, copyText, scoreClass, useErrorHandler, useToast } from '../ui';
+import { Alert, Avatar, Empty, Field, FieldErrors, Modal, Spinner, ago, copyText, scoreClass, useErrorHandler, useToast } from '../ui';
 
 const DATES: [string, string][] = [['today', 'Today'], ['3days', 'Last 3 days'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['all', 'Any time']];
 const TYPES = ['C2C', 'W2', '1099'];
@@ -15,6 +15,19 @@ const posted = (j: ExternalJob) => (j.daysOld == null ? 'Post date not shown' : 
 const rateText = (j: ExternalJob) => !j.maxRate ? null
   : j.minRate && Math.round(j.minRate) !== Math.round(j.maxRate) ? `$${Math.round(j.minRate)}–$${Math.round(j.maxRate)}/hr` : `$${Math.round(j.maxRate)}/hr`;
 const via = (j: ExternalJob) => j.publisher || 'the job board';
+/** The cover note without its closing ("Thanks, Name"), because the details and job description follow it and the
+ * recruiter's signature goes at the very bottom of the email. */
+const stripSignOff = (text: string | null | undefined) =>
+  (text ?? '').trim().replace(/\n+\s*(thanks|thank you|best|best regards|regards|warm regards|kind regards|sincerely|cheers)\b[^\n]*(\n[^\n]{0,80}){0,4}$/i, '').trim();
+/** The job description for an email body: tidy whitespace, cut at a paragraph or sentence near the limit. */
+const excerpt = (text: string | null | undefined, max: number) => {
+  const t = (text ?? '').replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (!t) return '(No description in the posting. See the link below.)';
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const at = Math.max(cut.lastIndexOf('\n'), cut.lastIndexOf('. '));
+  return `${cut.slice(0, at > max * 0.6 ? at + 1 : max).trim()}\n…`;
+};
 const skillList = (s: string) => s.split(',').map(x => x.trim()).filter(Boolean);
 const MAX_SKILLS = 5;
 
@@ -28,6 +41,9 @@ function ApplyLinks({ job, primary }: { job: ExternalJob; primary?: boolean }) {
       Apply on {o.publisher}{o.isDirect ? ' (company site)' : ''} ↗</a>))}</>;
 }
 
+const FORM = { mode: 'skills' as 'skills' | 'keyword', consultantId: '', skills: [] as string[], includeTitle: false,
+  query: '', location: '', datePosted: 'week', contractOnly: true, remoteOnly: false };
+type SearchForm = typeof FORM;
 type View = { searchId?: number; consultantId?: number; label?: string; cached?: boolean; found?: number; added?: number };
 
 export default function ExternalJobs() {
@@ -36,15 +52,13 @@ export default function ExternalJobs() {
   const notify = useToast();
   const [status, setStatus] = useState<JobFeedStatus | null>(null);
   const [cons, setCons] = useState<Consultant[]>([]);
-  const [form, setForm] = useState({ mode: 'skills' as 'skills' | 'keyword', consultantId: '', skills: [] as string[], includeTitle: false,
-    query: '', location: '', datePosted: 'week', contractOnly: true, remoteOnly: false });
+  const [form, setForm] = useState<SearchForm>(FORM);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [searching, setSearching] = useState(false);
   const [view, setView] = useState<View>({});
   const [list, setList] = useState<ExternalJob[] | null>(null);
   const [filter, setFilter] = useState({ q: '', minScore: '', hidden: false, board: '' });
   const [sel, setSel] = useState<number | null>(null);
-  const [best, setBest] = useState<Match[] | null>(null);
   const [apply, setApply] = useState<{ job: ExternalJob; consultantId?: number } | null>(null);
   const [importJob, setImportJob] = useState<ExternalJob | null>(null);
   const detailRef = useRef<HTMLElement>(null);
@@ -63,12 +77,6 @@ export default function ExternalJobs() {
   }, [view.searchId, view.consultantId, filter.hidden, filter.board, scope, onError]);
   useEffect(load, [load]);
 
-  useEffect(() => {
-    if (!sel || !can('match.view')) { setBest(null); return; }
-    setBest(null);
-    api<Match[]>(`/external-jobs/${sel}/matches`, { query: { scope } }).then(setBest).catch(() => setBest([]));
-  }, [sel, scope, can, list]);
-
   const shown = useMemo(() => {
     const q = filter.q.trim().toLowerCase(), min = Number(filter.minScore) || 0;
     return (list ?? []).filter(j => j.topScore >= min && (!q || `${j.title} ${j.company} ${j.location} ${j.publisher ?? ''} ${j.skills.join(' ')}`.toLowerCase().includes(q)));
@@ -82,8 +90,8 @@ export default function ExternalJobs() {
   const toggleSkill = (s: string) => setForm(f => ({ ...f, skills: f.skills.includes(s) ? f.skills.filter(x => x !== s) : f.skills.length >= MAX_SKILLS ? f.skills : [...f.skills, s] }));
   useEffect(() => { if (form.mode === 'skills' && !form.consultantId && cons[0]) pickConsultant(String(cons[0].id)); }, [cons, form.mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const search = async (e: FormEvent) => {
-    e.preventDefault();
+  const search = (e: FormEvent) => { e.preventDefault(); runSearch(form, chosen); };
+  const runSearch = async (form: SearchForm, chosen?: Consultant) => {
     setSearching(true); setErrors({});
     try {
       const bySkills = form.mode === 'skills' && !!chosen;
@@ -96,9 +104,30 @@ export default function ExternalJobs() {
       setFilter(f => ({ ...f, hidden: false }));
       notify(r.found ? 'success' : 'info', r.found ? `${r.found} job${r.found === 1 ? '' : 's'} found` : 'No jobs found',
         r.cached ? 'Same search was run recently, so saved results were used (no API call).' : r.found ? `${r.new} new since earlier searches.` : 'Try a broader title, another location, or a longer date range.');
-    } catch (err) { onError(err, setErrors); }
+    } catch (err) {
+      onError(err, setErrors);
+      // The job boards couldn't be searched: still show the jobs found earlier for this consultant.
+      if (chosen) setView({ consultantId: chosen.id, label: `jobs found earlier for ${chosen.name}` });
+    }
     finally { setSearching(false); loadStatus(); }
   };
+
+  // Opened from a consultant's "Match jobs" button (?consultant=ID): pick them and search their top skills right away.
+  // A recent identical search is served from saved results, so clicking Match again doesn't spend job-board calls.
+  const [params, setParams] = useSearchParams();
+  const autoMatched = useRef(false);
+  useEffect(() => {
+    const pid = params.get('consultant');
+    if (autoMatched.current || !pid || !cons.length || !status) return;
+    autoMatched.current = true;
+    const next = new URLSearchParams(params); next.delete('consultant'); setParams(next, { replace: true });
+    const c = cons.find(x => String(x.id) === pid);
+    if (!c) { notify('info', 'Consultant not available', 'Only consultants on Bench or Marketing can be matched to jobs.'); return; }
+    const f: SearchForm = { ...FORM, consultantId: pid, skills: c.skills.slice(0, 3) };
+    setForm(f);
+    if (status.configured) runSearch(f, c);
+    else setView({ consultantId: c.id, label: `jobs found earlier for ${c.name}` });
+  }, [cons, status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleHidden = async (j: ExternalJob) => {
     try {
@@ -219,7 +248,7 @@ export default function ExternalJobs() {
               <span className="tag s" title="Read from the job description. Confirm with the vendor or employer.">Visa: {job.visas.join(', ')}</span>
             </div>
             <div className="flex mt">
-              {can('sub.create') && <button className="btn btn-primary" onClick={() => setApply({ job })}>Apply candidate</button>}
+              {can('sub.create') && <button className="btn btn-primary" onClick={() => setApply({ job, consultantId: view.consultantId ?? chosen?.id })}>Apply candidate</button>}
               <ApplyLinks job={job} />
               {job.requirementId
                 ? (can('match.view') && <Link className="btn btn-outline" to={`/match?requirement=${job.requirementId}`}>Imported · open in Match Agent</Link>)
@@ -227,20 +256,6 @@ export default function ExternalJobs() {
               {can('jobs.create') && <button className="btn btn-sm" style={{ color: 'var(--muted)' }} onClick={() => toggleHidden(job)}>{job.hidden ? 'Restore' : 'Hide'}</button>}
             </div>
 
-            {can('match.view') && <div className="card mt2" style={{ background: '#f8fafc' }}><div className="card-b" style={{ padding: 14 }}>
-              <b style={{ fontSize: 13 }}>Best matches in your view</b>
-              {best === null ? <div className="muted mt"><Spinner dark /> Scoring…</div> : best.slice(0, 5).map(m => (
-                <div key={m.consultantId} className="flex between" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)', flexWrap: 'nowrap' }}>
-                  <div className="who" style={{ minWidth: 0 }}><Avatar name={m.consultantName} size={28} />
-                    <div><b style={{ fontSize: 13 }}>{m.consultantName}</b><small title={m.why}>{m.visa || 'Visa ?'} · ${m.payRate}/hr · {m.ownerName}</small></div></div>
-                  <span className="flex" style={{ flexWrap: 'nowrap' }}>
-                    <span className={`tag ${scoreClass(m.score)}`}>{m.score}%</span>
-                    {m.submittedStage ? <span className="tag c">{m.submittedStage}</span>
-                      : can('sub.create') && <button className="btn btn-sm btn-outline" onClick={() => setApply({ job, consultantId: m.consultantId })}>Apply</button>}
-                  </span>
-                </div>))}
-              {best?.length === 0 && <div className="muted mt">No bench consultants in your view.</div>}
-            </div></div>}
 
             {job.contactEmails.length > 0 && <p className="muted mt" style={{ fontSize: 13 }}>Recruiter email in the posting: {job.contactEmails.join(', ')}. You can email the candidate from the apply screen.</p>}
             <h4 className="mt2" style={{ fontSize: 14 }}>Skills found in the posting</h4>
@@ -325,6 +340,12 @@ function ApplyDialog({ job, consultantId, onClose, onDone }: { job: ExternalJob;
   const [done, setDone] = useState<{ submission: Submission; requirementId: number } | null>(null);
   const [pitch, setPitch] = useState<string | null>(null);
   const [emailTo, setEmailTo] = useState<string | null>(null);
+  /** The resume to attach: undefined while loading, null when there's none on file (resumeNote says why). */
+  const [resume, setResume] = useState<File | null | undefined>(undefined);
+  const [resumeNote, setResumeNote] = useState('');
+  const [autoOpened, setAutoOpened] = useState(false);
+  /** undefined while loading, null when the profile has no email. */
+  const [candidateEmail, setCandidateEmail] = useState<string | null | undefined>(undefined);
 
   useEffect(() => {
     const src = can('match.view') ? api<Match[]>(`/external-jobs/${job.id}/matches`) : Promise.resolve(job.matches);
@@ -334,12 +355,19 @@ function ApplyDialog({ job, consultantId, onClose, onDone }: { job: ExternalJob;
   }, [job.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const bill = req ? req.rate : Number(d.billRate) || 0;
-  const choose = (m: Match) => { setPick(m); setPayRate(m.payRate); setTouched(false); };
+  // The pay on a job board isn't the vendor's bill rate. Don't pre-fill it when it leaves no margin for this consultant.
+  const [postedNote, setPostedNote] = useState('');
+  const choose = (m: Match) => {
+    setPick(m); setPayRate(m.payRate); setTouched(false); setPostedNote('');
+    if (!req && job.maxRate && Number(d.billRate) === Math.round(job.maxRate) && job.maxRate < m.payRate) {
+      setD(x => ({ ...x, billRate: '' }));
+      setPostedNote(noMargin(m.payRate, Math.round(job.maxRate), true));
+    }
+  };
   useEffect(() => { if (pick && !touched) setSubmitRate(bill ? suggest(Number(payRate) || 0, bill) : ''); }, [pick, bill, payRate, touched]);
 
   const sr = Number(submitRate), pr = Number(payRate);
-  const rateMsg = bill && sr > bill ? `Above the $${bill}/hr bill rate` : sr && pr && sr <= pr ? 'Must be above the pay rate'
-    : can('margin.view') && sr && pr ? `Margin $${(sr - pr).toFixed(2)}/hr (${Math.round((sr - pr) / sr * 100)}%)` : '';
+  const check = rateCheck(pr, sr, bill, { fromPosting: !req, showMargin: can('margin.view') });
 
   const submit = async () => {
     if (!pick) return;
@@ -350,56 +378,91 @@ function ApplyDialog({ job, consultantId, onClose, onDone }: { job: ExternalJob;
       notify('success', 'Candidate submitted', `${r.submission.consultantName} → ${r.submission.title} (${r.submission.client})`);
       r.warnings.forEach(w => notify('warning', 'Heads up', w));
       setDone(r); onDone();
+      // Get the submission email ready: a cover note and the resume (tailored for this job when there is one).
       api<AiText>('/ai/pitch', { method: 'POST', body: { consultantId: r.submission.consultantId, requirementId: r.requirementId } })
         .then(p => setPitch(p.text)).catch(() => setPitch(''));
+      api<Consultant>(`/consultants/${r.submission.consultantId}`).then(c => setCandidateEmail(c.email || null)).catch(() => setCandidateEmail(null));
+      fetchFile(`/resumes/submission/${r.submission.consultantId}`)
+        .then(f => setResume(new File([f.blob], f.name ?? `${r.submission.consultantName} - Resume.docx`, { type: f.blob.type })))
+        .catch(e => { setResume(null); setResumeNote(e instanceof ApiError ? e.detail : "The resume couldn't be loaded. Attach it in the email."); });
     } catch (e) { onError(e, setErrors); }
     finally { setBusy(false); }
   };
 
-  if (done) return (
+  // Open the vendor email by itself once the cover note and the resume are ready (only once; the button reopens it).
+  const emailReady = !!done && pitch !== null && resume !== undefined && candidateEmail !== undefined;
+  useEffect(() => { if (emailReady && !autoOpened) { setAutoOpened(true); setEmailTo(job.contactEmails[0] ?? ''); } }, [emailReady, autoOpened, job.contactEmails]);
+
+  if (done) {
+    const s = done.submission;
+    const subject = `Submission: ${s.consultantName}${s.consultantTitle ? ` (${s.consultantTitle})` : ''} for ${job.title}${job.company ? ` – ${job.company}` : ''}`;
+    const body = [
+      stripSignOff(pitch) || `Hi,\n\nPlease find attached the resume of ${s.consultantName} for the ${job.title} role${job.company ? ` with ${job.company}` : ''}.`,
+      '',
+      'Submission details',
+      `• Candidate: ${s.consultantName}${s.consultantTitle ? `, ${s.consultantTitle}` : ''}`,
+      ...(candidateEmail ? [`• Candidate email: ${candidateEmail}`] : []),
+      `• Rate: $${s.submitRate}/hr ${s.type}`,
+      ...(pick?.visa ? [`• Work authorization: ${pick.visa}`] : []),
+      ...(s.rtr ? ['• RTR: signed'] : []),
+      ...(resume ? [`• Resume: attached (${resume.name})`] : []),
+      '',
+      `Job description: ${job.title}${job.company ? ` – ${job.company}` : ''}${job.location ? `, ${job.location}` : ''}`,
+      excerpt(job.description, 3500),
+      ...(job.applyUrl ? ['', `Posting: ${job.applyUrl}`] : []),
+    ].join('\n');
+    return (
     <Modal title="Candidate submitted" onClose={onClose}
       footer={<><Link className="btn btn-outline" to="/pipeline" onClick={onClose}>View in Submissions</Link><button className="btn btn-primary" onClick={onClose}>Done</button></>}>
-      <Alert type="success" title={`${done.submission.consultantName} is in the pipeline at "Submitted".`}>
+      <Alert type="success" title={`${s.consultantName} is in the pipeline at "Submitted".`}>
         The job is now a requirement, so stages, onboarding and reports track it like any other submission.
       </Alert>
-      <p className="mt"><b>Last step:</b> LinkedIn and other job boards only take applications on their own site. Copy the cover note, then apply there with the resume.</p>
-      <Field label="Cover note (edit before you paste)" className="mt">
-        {pitch === null ? <div className="muted"><Spinner dark /> Writing a cover note…</div>
-          : <textarea className="inp" style={{ minHeight: 150 }} value={pitch} onChange={e => setPitch(e.target.value)} placeholder="Write a short note about the candidate" />}
-      </Field>
-      <div className="flex">
+      <p className="mt"><b>Next: email the vendor.</b> The email has the cover note, submission details and the job description, with the resume attached. It sends from your Outlook.</p>
+      <div className="flex mt">
+        {!emailReady ? <span className="muted"><Spinner dark /> Writing the cover note and attaching the resume…</span>
+          : <button className="btn btn-primary" onClick={() => setEmailTo(job.contactEmails[0] ?? '')}>✉ Email the vendor</button>}
+        <ApplyLinks job={job} />
         {pitch && <button className="btn btn-outline" onClick={() => copyText(pitch, notify)}>Copy cover note</button>}
-        <ApplyLinks job={job} primary />
-        {job.contactEmails.map(e => <button key={e} className="btn btn-outline" onClick={() => setEmailTo(e)}>✉ Email {e}</button>)}
       </div>
-      {job.contactEmails.length > 0 && <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>Sends from your Outlook with the cover note filled in. Attach the resume in the email window.</p>}
-      {emailTo && <ComposeDialog onClose={() => setEmailTo(null)}
-        initial={{ to: emailTo, subject: `${done.submission.consultantTitle || 'Candidate'}: ${done.submission.consultantName} for ${job.title}`, body: pitch ?? '' }} />}
-    </Modal>
-  );
+      {resume === null && <Alert type="warning" title="No resume attached">{resumeNote}</Alert>}
+      {resume && <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>Attached: 📎 {resume.name}</p>}
+      <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>Job boards like LinkedIn and Dice only take applications on their own site. Use the apply link too if the posting asks for it.</p>
+      {emailTo !== null && <ComposeDialog onClose={() => setEmailTo(null)} title={`Submit ${s.consultantName} to the vendor`}
+        initial={{ to: emailTo, subject, body }} initialFiles={resume ? [resume] : []} consultantId={s.consultantId} vendorHint={job.company} />}
+    </Modal>);
+  }
 
   return (
     <Modal title={`Apply candidate · ${job.title}`} onClose={onClose}
-      footer={<>{pick && !consultantId && <button className="btn btn-outline" style={{ marginRight: 'auto' }} onClick={() => setPick(null)}>← Choose someone else</button>}
+      footer={<>{pick && !consultantId && <button className="btn btn-outline" style={{ marginRight: 'auto' }} onClick={() => setPick(null)}>← Change candidate</button>}
         <button className="btn btn-outline" onClick={onClose}>Cancel</button>
         {pick && <button className="btn btn-primary" onClick={submit} disabled={busy || (!req && !can('jobs.create'))}>{busy ? <Spinner /> : 'Submit candidate'}</button>}</>}>
       {matches === null ? <Empty><Spinner dark /> Scoring your bench…</Empty> : !pick ? (
         <>
-          <p className="muted" style={{ marginBottom: 12 }}>Choose a consultant from your view. Best matches are first.</p>
-          {matches.map(m => (
-            <button key={m.consultantId} className="match" disabled={!!m.submittedStage} style={{ width: '100%', textAlign: 'left', cursor: m.submittedStage ? 'default' : 'pointer', opacity: m.submittedStage ? 0.6 : 1 }}
-              onClick={() => choose(m)}>
-              <Ring score={m.score} size={46} />
-              <div className="mi"><b>{m.consultantName}</b><small>{m.consultantTitle} · {m.visa || 'Visa ?'} · ${m.payRate}/hr</small><div className="why">{m.why}</div></div>
-              {m.submittedStage && <span className="tag c">Already {m.submittedStage.toLowerCase()}</span>}
-            </button>))}
-          {matches.length === 0 && <Empty>No bench consultants in your view.</Empty>}
+          {consultantId && matches.find(m => m.consultantId === consultantId)?.submittedStage
+            ? <Alert type="info" title="Already submitted">{matches.find(m => m.consultantId === consultantId)!.consultantName} is already at "{matches.find(m => m.consultantId === consultantId)!.submittedStage}" for this job.</Alert>
+            : matches.length === 0 ? <Empty>No bench consultants in your view.</Empty> : (
+              <Field label="Candidate">
+                <select className="inp" value="" onChange={e => { const m = matches.find(x => String(x.consultantId) === e.target.value); if (m) choose(m); }}>
+                  <option value="">Choose the consultant…</option>
+                  {matches.filter(m => !m.submittedStage).sort((a, b) => a.consultantName.localeCompare(b.consultantName))
+                    .map(m => <option key={m.consultantId} value={m.consultantId}>{m.consultantName} · {m.consultantTitle}</option>)}
+                </select>
+              </Field>)}
         </>
       ) : (
         <>
-          <div className="flex" style={{ marginBottom: 14 }}><Avatar name={pick.consultantName} />
-            <div><b>{pick.consultantName}</b> <span className={`tag ${scoreClass(pick.score)}`}>{pick.score}% match</span>
-              <div className="muted" style={{ fontSize: 13 }}>→ {job.title} · {job.company} · found on {via(job)}</div></div></div>
+          <div className="cand-card">
+            <div className="flex" style={{ flexWrap: 'nowrap' }}><Avatar name={pick.consultantName} size={42} />
+              <div style={{ flex: 1, minWidth: 0 }}><b>{pick.consultantName}</b> <span className={`tag ${scoreClass(pick.score)}`}>{pick.score}% match</span>
+                <div className="muted" style={{ fontSize: 13 }}>{pick.consultantTitle}</div></div>
+              <Link className="btn btn-sm btn-outline" to={`/bench/${pick.consultantId}`} target="_blank" rel="noreferrer">Profile</Link></div>
+            <div className="cand-facts">
+              <span><small>Visa</small>{pick.visa || '—'}</span><span><small>Pay rate</small>${pick.payRate}/hr</span>
+              <span><small>Executive</small>{pick.ownerName}</span><span><small>Applying to</small>{job.title} · {job.company}</span>
+            </div>
+            {pick.hit.length > 0 && <div style={{ marginTop: 6 }}><small className="muted">Matching skills: </small>{pick.hit.map(h => <span key={h} className="tag g">{h}</span>)}</div>}
+          </div>
           {!pick.visaOk && <Alert type="warning" title="Visa may not be accepted">{pick.visa || 'Unknown visa'} isn't in the visas read from the posting ({job.visas.join(', ')}). Confirm before applying.</Alert>}
           {pick.miss.length > 0 && <p className="muted" style={{ fontSize: 12.5, margin: '0 0 12px' }}>Skill gaps: {pick.miss.join(', ')}</p>}
           {req
@@ -413,7 +476,8 @@ function ApplyDialog({ job, consultantId, onClose, onDone }: { job: ExternalJob;
             <Field label="Consultant pay rate ($/hr) *" error={errors.payRate}>
               <input className="inp" type="number" value={payRate} onChange={e => setPayRate(e.target.value === '' ? '' : Number(e.target.value))} /></Field>
           </div>
-          {rateMsg && <p style={{ fontSize: 12.5, margin: '-6px 0 12px', color: rateMsg.startsWith('Above') || rateMsg.startsWith('Must') ? 'var(--bad)' : 'var(--muted)' }}>{rateMsg}</p>}
+          {postedNote && !bill && <Alert type="warning" title="Enter the vendor's bill rate">{postedNote}</Alert>}
+          {check && <p style={{ fontSize: 12.5, margin: '-6px 0 12px', color: rateColor(check.kind) }}>{check.text}</p>}
           <Field label="Notes" error={errors.notes}><textarea className="inp" style={{ minHeight: 60 }} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Availability, interview slots, recruiter contact at the employer…" /></Field>
           <Field error={errors.rtrSigned}>
             <label className="check"><input type="checkbox" checked={rtr} onChange={e => setRtr(e.target.checked)} />

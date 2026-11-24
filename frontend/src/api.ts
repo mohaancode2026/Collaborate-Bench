@@ -132,6 +132,8 @@ export interface Consultant {
   id: number; name: string; title: string; email: string; phone: string; visa: string; location: string; relocate: boolean;
   rate: number; exp: number; status: string; skills: string[]; summary: string; ownerId: number; ownerName: string;
   ownerTeam?: string; daysOnBench: number; activeSubmissions: number; rowVersion: string;
+  /** "Team Lead" = still to be given to a recruiter. */
+  ownerRole?: string; documents?: number;
   linkedInUrl?: string | null; source?: string;
   /** Masked (••••1234) when a passport number is on file. */
   passportOnFile?: string | null; visaValidUntil?: string | null; availability?: string | null; preferredLocations?: string | null;
@@ -187,6 +189,41 @@ export interface VendorEmail {
 }
 export interface RecruiterMailStat { userId: number; name: string; sent: number; received: number; vendors: number; awaitingReply: number; lastContactUtc?: string | null; mailbox?: string | null; mailStatus?: string | null; }
 export interface MailSummary { days: number; sent: number; received: number; vendorsContacted: number; awaitingReply: number; byVendor: VendorInfo[]; byRecruiter: RecruiterMailStat[]; }
+// ---------- AI Inbox ----------
+export interface InboxJob { title: string; client?: string | null; location?: string | null; mode: string; type: string; rate: number; skills: string[]; minYears?: number | null; visas: string[]; }
+export interface InboxMatch { consultantId: number; name: string; title: string; score: number; why: string; exp: number; resumeReady: boolean; }
+export interface InboxItem {
+  id: number; receivedUtc: string; fromAddress: string; fromName?: string | null; subject: string; summary: string;
+  category: 'JobListing' | 'Interview' | 'FollowUp' | 'Rate' | 'Rejection' | 'Other' | 'Noise' | 'Sent'; priority: 'High' | 'Medium' | 'Low';
+  priorityReason?: string | null; needsReply: boolean; status: 'New' | 'Done' | 'Dismissed'; engine: string; hasAttachments: boolean;
+  job?: InboxJob | null; matches: InboxMatch[]; openTasks: number; requirementId?: number | null;
+  /** In = received, Out = sent by you. */
+  direction: 'In' | 'Out'; toAddresses?: string | null;
+  /** Sent: when they replied. Received: when you answered. */
+  answeredUtc?: string | null;
+  /** The email's files, downloaded from Outlook on demand. */
+  attachments?: InboxAttachment[] | null;
+  consultantId?: number | null; requests?: string[] | null; team?: string | null; slots?: string[] | null;
+}
+export interface InboxAttachment { index: number; name: string; size: number; contentType?: string | null; }
+export interface InboxTask {
+  id: number; inboxItemId?: number | null; emailSubject?: string | null; kind: 'Task' | 'FollowUp' | 'Interview'; title: string;
+  dueUtc?: string | null; durationMinutes?: number | null; consultantId?: number | null; consultantName?: string | null; consultantEmail?: string | null;
+  location?: string | null; notes?: string | null; sharedUtc?: string | null; status: 'Open' | 'Done' | 'Dismissed'; auto: boolean;
+  /** What "Open draft" writes: Reply, Nudge, Feedback, AskConsultant, Slots, Forward:Team, Mock. */
+  action?: string | null; interviewType?: string | null; mockSession: boolean; slots?: string[] | null; parentTaskId?: number | null;
+  sequence: number; ownerName?: string | null;
+}
+export interface InboxHome { tasks: InboxTask[]; interviews: InboxTask[]; overdue: number; }
+export interface InboxDetail { item: InboxItem; body: string; tasks: InboxTask[]; }
+export interface InboxSummary {
+  configured: boolean; connected: boolean; lastSyncUtc?: string | null; open: number; high: number; jobs: number; needsReply: number;
+  interviews: number; tasksDue: number; latestHighId?: number | null; latestHighSubject?: string | null; latestHighFrom?: string | null; latestHighUtc?: string | null;
+  /** Sent 1–14 days ago, no reply yet. */
+  awaitingReply: number;
+}
+export interface InboxDraft { to: string; subject: string; body: string; replyToInboxItemId?: number | null; engine: string; notice?: string | null; }
+
 export interface MailConnection { configured: boolean; connected: boolean; mailbox?: string | null; status?: string | null; lastSyncUtc?: string | null; lastError?: string | null; vendors: number; canSend: boolean; }
 export interface EmailTemplate {
   id: number; name: string; category: string; subject: string; body: string; shared: boolean; builtIn: boolean; ownerName?: string | null;
@@ -235,3 +272,13 @@ export const STAGES = ['Submitted', 'Vendor Screen', 'Client Interview', 'Offer'
 export const ONBOARDING_STAGES = ['MSA / PO', 'Billing'];
 export const VISAS = ['USC', 'GC', 'GC-EAD', 'H1B', 'H4-EAD', 'L2-EAD', 'OPT', 'CPT', 'STEM OPT', 'TN', 'EAD'];
 export const CHANNELS = ['Dice', 'LinkedIn Jobs', 'Indeed', 'Monster', 'C2C Portals', 'Vendor Email', 'VMS Portal', 'Corp Website'];
+
+// ---------- Consultant profile & documents ----------
+export interface ConsultantProfile {
+  id: number; legalName?: string | null; marketingTechnology?: string | null; keywords?: string | null; googleVoice?: string | null;
+  personalPhone?: string | null; dateOfBirth?: string | null; ssnLast4?: string | null; idType?: string | null; bachelors?: string | null;
+  masters?: string | null; locationConstraints?: string | null; currentProjectEnd?: string | null; doNotSubmit?: string | null;
+  passportOnFile?: string | null; canSeePrivate: boolean;
+}
+export interface ConsultantDocument { id: number; kind: string; fileName: string; contentType: string; sizeBytes: number; note?: string | null; expiresOn?: string | null; uploadedBy: string; uploadedUtc: string; }
+export interface Assignee { id: number; name: string; role: string; team?: string | null; consultants: number; }

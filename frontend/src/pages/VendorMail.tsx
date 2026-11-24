@@ -73,7 +73,7 @@ export default function VendorMail() {
   const showRecruiter = (id: number) => { setF({ ...f, userId: String(id) }); setTab('activity'); };
 
   const tabs: [Tab, string][] = [['activity', 'Activity'], ['followups', `Follow-ups${due ? ` (${due} due)` : ''}`], ['vendors', 'By vendor'],
-    ...(team ? [['recruiters', 'By recruiter'] as [Tab, string]] : []), ['directory', 'Vendor list'], ['templates', 'Templates']];
+    ...(team ? [['recruiters', 'By executive'] as [Tab, string]] : []), ['directory', 'Vendor list'], ['templates', 'Templates']];
 
   return (
     <>
@@ -107,7 +107,7 @@ export default function VendorMail() {
               <input className="inp" style={{ width: 200, padding: '7px 10px' }} placeholder="Search subject, email, consultant" value={f.q} onChange={e => setF({ ...f, q: e.target.value })} />
               <select className="inp" style={{ width: 'auto', padding: '7px 10px' }} value={f.vendorId} onChange={e => setF({ ...f, vendorId: e.target.value })} aria-label="Vendor">
                 <option value="">All vendors</option>{summary?.byVendor.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</select>
-              {team && <select className="inp" style={{ width: 'auto', padding: '7px 10px' }} value={f.userId} onChange={e => setF({ ...f, userId: e.target.value })} aria-label="Recruiter">
+              {team && <select className="inp" style={{ width: 'auto', padding: '7px 10px' }} value={f.userId} onChange={e => setF({ ...f, userId: e.target.value })} aria-label="Executive">
                 <option value="">Everyone</option>{summary?.byRecruiter.map(r => <option key={r.userId} value={r.userId}>{r.name}</option>)}</select>}
               {tab === 'activity' && <select className="inp" style={{ width: 'auto', padding: '7px 10px' }} value={f.direction} onChange={e => setF({ ...f, direction: e.target.value })} aria-label="Direction">
                 <option value="">Sent and received</option><option value="Out">Sent to vendor</option><option value="In">From vendor</option></select>}
@@ -132,7 +132,7 @@ export default function VendorMail() {
           {summary?.byVendor.length === 0 && <tr><td colSpan={5}><Empty>No vendors in the list yet.</Empty></td></tr>}
         </tbody></table></div>}
 
-        {tab === 'recruiters' && <div className="tw"><table><thead><tr><th>Recruiter</th><th>Outlook</th><th>Sent</th><th>Received</th><th>Vendors</th><th>Awaiting reply</th><th>Last contact</th></tr></thead><tbody>
+        {tab === 'recruiters' && <div className="tw"><table><thead><tr><th>Executive</th><th>Outlook</th><th>Sent</th><th>Received</th><th>Vendors</th><th>Awaiting reply</th><th>Last contact</th></tr></thead><tbody>
           {summary?.byRecruiter.map(r => (
             <tr key={r.userId} style={{ cursor: 'pointer' }} onClick={() => showRecruiter(r.userId)}>
               <td><b>{r.name}</b></td>
@@ -198,7 +198,7 @@ function EmailTable({ emails, team, awaiting, meId, onReply, onRemind }: { email
   if (emails === null) return <Empty><Spinner dark /> Loading emails…</Empty>;
   if (emails.length === 0) return <Empty>{awaiting ? 'Nothing waiting. Every email sent to a vendor got a reply within 48 hours.' : 'No vendor emails in this period.'}</Empty>;
   return (
-    <div className="tw"><table><thead><tr><th>When</th><th /><th>Vendor</th><th>Email</th><th>Consultant</th>{team && <th>Recruiter</th>}<th /></tr></thead><tbody>
+    <div className="tw"><table><thead><tr><th>When</th><th /><th>Vendor</th><th>Email</th><th>Consultant</th>{team && <th>Executive</th>}<th /></tr></thead><tbody>
       {emails.map(e => (
         <tr key={e.id} className="mailrow">
           <td style={{ whiteSpace: 'nowrap' }}>{when(e.sentUtc)}</td>

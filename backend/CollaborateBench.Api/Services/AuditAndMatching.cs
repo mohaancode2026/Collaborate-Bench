@@ -80,6 +80,23 @@ public static class Matching
         var target = Math.Round((pay > 0 ? pay : bill * 0.8m) * 1.12m);
         return Math.Max(Math.Min(ceil, target), Math.Min(floor, ceil));
     }
+
+    /// <summary>A submit rate at least the pay rate and at most the bill rate: above pay when there's room, equal to pay
+    /// (no margin) when bill equals pay, null when bill is below pay. Never returns a rate the submission rules reject.</summary>
+    public static decimal? TrySuggestRate(decimal pay, decimal bill)
+    {
+        if (pay <= 0 || bill < pay) return null;
+        if (bill == pay) return pay;
+        var s = SuggestRate(pay, bill);
+        if (s > pay && s <= bill) return s;
+        var mid = Math.Floor((pay + bill) / 2);   // very thin margin: halfway, still inside the rules
+        return mid > pay && mid <= bill ? mid : bill;
+    }
+
+    /// <summary>Why no submit rate fits, in words a recruiter can act on.</summary>
+    public static string NoMarginMessage(decimal pay, decimal bill, bool fromJobPosting) => fromJobPosting
+        ? $"The job posting shows ${bill:0.##}/hr, below the consultant's ${pay:0.##}/hr pay rate. Job boards usually show what the employer pays, not the vendor's bill rate: get the bill rate from the vendor and enter it."
+        : $"The ${bill:0.##}/hr bill rate is below the consultant's ${pay:0.##}/hr pay rate. Ask the vendor for a higher bill rate or agree a lower pay rate first.";
 }
 
 /// <summary>Rules that drive the dashboard risks and the AI briefing.</summary>

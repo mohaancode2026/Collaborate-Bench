@@ -242,7 +242,7 @@ public sealed class LinkedInController(AppDbContext db, DataService data, AiServ
     }
 
     /// <summary>Sourced leads (not yet on the bench) for the portal's Leads page, newest first, with their latest touch and next reminder.</summary>
-    [HttpGet("leads"), RequirePerm("bench.view")]
+    [HttpGet("leads"), RequirePerm("leads.view")]
     public async Task<List<LeadRow>> Leads([FromQuery] string? scope, CancellationToken ct)
     {
         var leads = await data.ConsultantsAsync(scope, ct, leadsOnly: true);

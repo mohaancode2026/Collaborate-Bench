@@ -72,11 +72,16 @@ public sealed class VendorMailController(AppDbContext db, DataService data, ICur
             original = await db.VendorEmails.AsNoTracking().FirstOrDefaultAsync(e => e.VendorEmailId == rid && e.UserId == me.RequiredId, ct)
                        ?? throw AppException.NotFound("Email");
 
+        string? inboxReplyId = null;
+        if (original is null && form.ReplyToInboxItemId is int iid)
+            inboxReplyId = await db.InboxItems.AsNoTracking().Where(i => i.InboxItemId == iid && i.UserId == me.RequiredId).Select(i => i.MessageId).FirstOrDefaultAsync(ct)
+                           ?? throw AppException.NotFound("Email");
+
         new Validator()
             .Check(to.Count > 0, "to", "Add at least one recipient")
             .Check(badAddr.Count == 0, "to", $"Not a valid email address: {string.Join(", ", badAddr)}")
             .Check(to.Count + cc.Count <= 20, "to", "Up to 20 recipients")
-            .Check(original != null || subject.Length > 0, "subject", "Add a subject")
+            .Check(original != null || inboxReplyId != null || subject.Length > 0, "subject", "Add a subject")
             .Check(subject.Length <= 255, "subject", "Keep the subject under 255 characters")
             .Check(body.Length > 0, "body", "Write a message")
             .Check(body.Length <= 20000, "body", "Keep the message under 20,000 characters")
@@ -93,7 +98,16 @@ public sealed class VendorMailController(AppDbContext db, DataService data, ICur
             attachments.Add(new OutgoingAttachment(Path.GetFileName(f.FileName), string.IsNullOrEmpty(f.ContentType) ? "application/octet-stream" : f.ContentType, ms2.ToArray()));
         }
 
-        await sender.SendAsync(me.RequiredId, new OutgoingMail(to, cc, subject, body, attachments, original?.MessageId), ct);
+        // A reply carries a subject too: used if Outlook can't answer in the thread and it goes out as a new email.
+        var mailSubject = subject.Length > 0 ? subject : original != null ? "RE: " + original.Subject : subject;
+        await sender.SendAsync(me.RequiredId, new OutgoingMail(to, cc, mailSubject, body, attachments, original?.MessageId ?? inboxReplyId), ct);
+        if (form.ReplyToInboxItemId is int answered)   // answering an AI Inbox email closes it and its follow-up tasks
+        {
+            await db.InboxItems.Where(i => i.InboxItemId == answered && i.UserId == me.RequiredId)
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.Status, "Done"), CancellationToken.None);
+            await db.InboxTasks.Where(t => t.InboxItemId == answered && t.Kind == "FollowUp" && t.Status == "Open")
+                .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, "Done").SetProperty(t => t.ClosedUtc, DateTime.UtcNow), CancellationToken.None);
+        }
 
         var vendors = new VendorMatcher(await db.Vendors.AsNoTracking().Where(v => v.IsActive).ToListAsync(ct));
         var tracked = to.Concat(cc).Any(a => vendors.Match(a) != null);
@@ -219,6 +233,37 @@ public sealed class VendorMailController(AppDbContext db, DataService data, ICur
 
         return new MailSummary(days, rows.Count(r => r.Direction == "Out"), rows.Count(r => r.Direction == "In"), rows.Select(r => r.VendorId).Distinct().Count(),
             awaiting.Count, byVendor, byRecruiter);
+    }
+
+    // ---------- email signature ----------
+
+    /// <summary>Your email signature (added at the bottom of emails you write here): the one you saved here, else your Outlook
+    /// signature (read from your sent mail), else a default from your profile. <c>source</c> says which.</summary>
+    [HttpGet("mail/signature"), RequirePerm("mail.view")]
+    public async Task<MailSignatureDto> Signature([FromServices] MailSignatureService sigs, CancellationToken ct)
+    {
+        var s = await sigs.GetAsync(me.RequiredId, ct);
+        return new MailSignatureDto(s.Signature, s.Source == "custom", s.Default, s.Source, s.Outlook, MailSignatureService.PreviewHtml(s.Rich));
+    }
+
+    /// <summary>Saves your signature. Empty goes back to your Outlook signature (or the default one).</summary>
+    [HttpPut("mail/signature"), RequirePerm("mail.view")]
+    public async Task<MailSignatureDto> SaveSignature(MailSignatureInput input, [FromServices] MailSignatureService sigs, CancellationToken ct)
+    {
+        var text = (input.Signature ?? "").Replace("\r\n", "\n").Trim();
+        new Validator().Check(text.Length <= 2000, "signature", "Keep the signature under 2,000 characters").ThrowIfInvalid();
+        var u = await db.Users.FirstAsync(x => x.UserId == me.RequiredId, ct);
+        u.EmailSignature = text.Length == 0 ? null : text;
+        await db.SaveChangesAsync(ct);
+        return await Signature(sigs, ct);
+    }
+
+    /// <summary>Reads your Outlook signature again (after you changed it in Outlook).</summary>
+    [HttpPost("mail/signature/refresh"), RequirePerm("mail.view"), EnableRateLimiting("ai")]
+    public Task<MailSignatureDto> RefreshSignature([FromServices] MailSignatureService sigs, CancellationToken ct)
+    {
+        sigs.Forget(me.RequiredId);
+        return Signature(sigs, ct);
     }
 
     // ---------- vendor directory ----------

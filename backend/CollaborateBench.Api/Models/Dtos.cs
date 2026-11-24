@@ -69,6 +69,9 @@ public sealed class ConsultantDto
     public int OwnerId { get; set; }
     public string OwnerName { get; set; } = "";
     public string? OwnerTeam { get; set; }
+    /// <summary>The owner's role: "Team Lead" means the consultant still has to be given to a recruiter.</summary>
+    public string OwnerRole { get; set; } = "";
+    public int Documents { get; set; }
     public int DaysOnBench { get; set; }
     [System.Text.Json.Serialization.JsonIgnore] public DateTime CreatedUtc { get; set; }
     public int ActiveSubmissions { get; set; }
@@ -251,3 +254,37 @@ public sealed record ExternalApplyInput(int ConsultantId, decimal SubmitRate, de
 /// <param name="CallsToday">JSearch calls today, against <paramref name="DailyLimit"/>. Dice is free and not counted.</param>
 public sealed record JobFeedStatus(bool Configured, string Provider, int CallsToday, int DailyLimit, int AutoRefreshHours, DateTime? LastSearchUtc, int StoredJobs,
     bool Dice = false, bool Indeed = false);
+
+// ---------- Hotlist ----------
+/// <param name="AttachResumes">Default true: attach each consultant's latest resume.</param>
+public sealed record HotlistSendInput(List<int>? ConsultantIds, List<int>? RecipientUserIds, string? Note, bool? AttachResumes);
+/// <param name="Emails">How many emails it took (resumes are split when they're too big for one).</param>
+public sealed record HotlistSendResult(int Consultants, int ResumesAttached, int Emails, List<string> SentTo, List<string> NoResume, List<string> TooLarge);
+
+// ---------- Consultant profile (marketing intake) and documents ----------
+/// <param name="DateOfBirth">Only for roles that can edit consultants; otherwise null.</param>
+public sealed record ConsultantProfileDto(int Id, string? LegalName, string? MarketingTechnology, string? Keywords, string? GoogleVoice, string? PersonalPhone,
+    DateTime? DateOfBirth, string? SsnLast4, string? IdType, string? Bachelors, string? Masters, string? LocationConstraints, string? CurrentProjectEnd,
+    string? DoNotSubmit, string? PassportOnFile, bool CanSeePrivate);
+public sealed record ConsultantProfileInput(string? LegalName, string? MarketingTechnology, string? Keywords, string? GoogleVoice, string? PersonalPhone,
+    DateTime? DateOfBirth, string? SsnLast4, string? IdType, string? Bachelors, string? Masters, string? LocationConstraints, string? CurrentProjectEnd,
+    string? DoNotSubmit);
+public sealed record ConsultantDocumentDto(int Id, string Kind, string FileName, string ContentType, long SizeBytes, string? Note, DateTime? ExpiresOn,
+    string UploadedBy, DateTime UploadedUtc);
+/// <param name="Notify">Default true: email the new owner from your Outlook (consultant list, profile links, latest resumes).</param>
+public sealed record AssignInput(List<int>? ConsultantIds, int OwnerUserId, bool? Notify = null, bool? AttachResumes = null, string? Note = null);
+public sealed record Assignee(int Id, string Name, string Role, string? Team, int Consultants);
+/// <param name="Emailed">The new owner got the assignment email.</param>
+/// <param name="MailError">Why the email didn't go (the assignment itself still happened).</param>
+public sealed record AssignResult(int Assigned, string OwnerName, string OwnerRole, bool Emailed = false, string? MailError = null, int ResumesAttached = 0);
+
+// ---------- Paging ----------
+/// <summary>One page of a list. <paramref name="Page"/> is 1-based; <paramref name="Total"/> counts every match.</summary>
+public sealed record PagedResult<T>(List<T> Items, int Total, int Page, int PageSize);
+public sealed record OwnerCount(int Id, string Name, int Count);
+/// <summary>Grid query for submissions. Sort: consultant | requirement | rate | margin | match | stage | days | owner | created; Dir: asc | desc.</summary>
+public sealed record SubmissionPageQuery(string? Scope, string? Stage, string? Q, int? Owner, bool StaleOnly, string? Sort, string? Dir, int Page = 1, int PageSize = 25);
+/// <param name="StageCounts">Submissions per stage for the current search and executive filter (the stage tabs).</param>
+/// <param name="StaleCount">How many are 3+ days in their stage (within the chosen stage).</param>
+/// <param name="Owners">Executives with submissions in the current search, for the filter.</param>
+public sealed record SubmissionPage(List<SubmissionDto> Items, int Total, int Page, int PageSize, Dictionary<string, int> StageCounts, int StaleCount, List<OwnerCount> Owners);

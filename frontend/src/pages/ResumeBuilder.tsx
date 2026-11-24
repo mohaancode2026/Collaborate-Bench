@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api, Consultant, download, fetchFile, Requirement, ResumeDoc, ResumeSource, TailoredResume } from '../api';
 import { useAuth } from '../auth';
 import { ComposeDialog } from '../compose';
-import { fileToText } from '../resumeFile';
+import { fileToText, storeResumeFile } from '../resumeFile';
 import { AiBadge, Alert, Empty, Field, FieldErrors, Modal, Spinner, ago, copyText, useConfirm, useErrorHandler, useToast } from '../ui';
 
 type Job = ResumeDoc['experience'][number];
@@ -29,7 +29,15 @@ export default function ResumeBuilder() {
   const [dirty, setDirty] = useState(false);
   const [view, setView] = useState<'preview' | 'edit' | 'design'>('preview');
   // ?requirement= preselects the job (e.g. when opened from the Match Agent).
-  const [t, setT] = useState({ mode: 'req' as 'req' | 'jd', requirementId: params.get('requirement') ?? '', jobTitle: '', client: '', jd: '', hideContact: true, focus: '' });
+  // ?from=inbox: the AI Inbox handed over a job email's description (sessionStorage), so tailor against that text.
+  const [t, setT] = useState(() => {
+    const base = { mode: 'req' as 'req' | 'jd', requirementId: params.get('requirement') ?? '', jobTitle: '', client: '', jd: '', hideContact: true, focus: '' };
+    if (params.get('from') !== 'inbox') return base;
+    try {
+      const j = JSON.parse(sessionStorage.getItem('cbs.tailorJob') ?? 'null') as { jobTitle?: string; client?: string; jd?: string } | null;
+      return j?.jd ? { ...base, mode: 'jd' as const, jobTitle: j.jobTitle ?? '', client: j.client ?? '', jd: j.jd } : base;
+    } catch { return base; }
+  });
   const [errors, setErrors] = useState<FieldErrors>({});
   const [tailoring, setTailoring] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -66,7 +74,10 @@ export default function ResumeBuilder() {
       const text = (await fileToText(f)).trim();
       const s = await api<ResumeSource>('/resumes/source', { method: 'POST', body: { consultantId: cid, text, fileName: f.name } });
       setSource(s);
-      notify('success', 'Original resume saved', `${f.name} is now the source for tailored versions.`);
+      // Keep the file itself too, so the exact resume can be sent to vendors.
+      const problem = await storeResumeFile(Number(cid), f, s.resumeId);
+      notify(problem ? 'warning' : 'success', 'Original resume saved',
+        problem ? `The text was saved, but the file itself couldn't be stored: ${problem}` : `${f.name} is stored and is now the source for tailored versions.`);
     } catch (e) {
       if (e instanceof Error && !('status' in e)) notify('warning', "Couldn't read that file", e.message);
       else onError(e);

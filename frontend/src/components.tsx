@@ -54,12 +54,12 @@ export function ConsultantForm({ draft, set, errors }: { draft: ConsultantDraft;
         <Field label="Title" error={errors.title}><input className="inp" value={draft.title} onChange={e => f('title')(e.target.value)} /></Field>
       </div>
       <div className="row2">
-        <Field label="Email" error={errors.email}><input className="inp" type="email" value={draft.email} onChange={e => f('email')(e.target.value)} /></Field>
-        <Field label="Phone" error={errors.phone}><input className="inp" value={draft.phone} onChange={e => f('phone')(e.target.value)} /></Field>
+        <Field label={draft.status === 'Lead' ? 'Email' : 'Email *'} error={errors.email}><input className="inp" type="email" value={draft.email} onChange={e => f('email')(e.target.value)} /></Field>
+        <Field label={draft.status === 'Lead' ? 'Phone' : 'Phone *'} error={errors.phone}><input className="inp" value={draft.phone} onChange={e => f('phone')(e.target.value)} placeholder="+1 (469) 555-0100" /></Field>
       </div>
       <div className="row3">
         <Field label="Visa" error={errors.visa}><select className="inp" value={draft.visa} onChange={e => f('visa')(e.target.value)}><option value="">—</option>{VISAS.map(v => <option key={v}>{v}</option>)}</select></Field>
-        <Field label="Pay rate ($/hr) *" error={errors.rate}><input className="inp" type="number" value={draft.rate} onChange={e => f('rate')(e.target.value === '' ? '' : Number(e.target.value))} /></Field>
+        <Field label="Pay rate ($/hr)" error={errors.rate}><input className="inp" type="number" placeholder="Optional" value={draft.rate} onChange={e => f('rate')(e.target.value === '' ? '' : Number(e.target.value))} /></Field>
         <Field label="Experience (yrs)" error={errors.exp}><input className="inp" type="number" value={draft.exp} onChange={e => f('exp')(e.target.value === '' ? '' : Number(e.target.value))} /></Field>
       </div>
       <div className="row2">
@@ -108,11 +108,40 @@ export function ConsultantForm({ draft, set, errors }: { draft: ConsultantDraft;
   );
 }
 
-/** Suggested submit rate: about 12% over pay, never above 95% of the bill rate. */
-export const suggest = (pay: number, bill: number) => {
+/** Suggested submit rate: about 12% over pay, never above 95% of the bill rate. Always between pay and the bill rate:
+ * the pay rate itself when bill equals pay (no margin), '' when bill is below pay, so nothing invalid is pre-filled. */
+export const suggest = (pay: number, bill: number): number | '' => {
+  if (!(pay > 0) || !(bill >= pay)) return '';
+  if (bill === pay) return pay;
   const floor = Math.ceil(pay * 1.1), ceil = Math.floor(bill * 0.95);
-  return Math.max(Math.min(ceil, Math.round((pay || bill * 0.8) * 1.12)), Math.min(floor, ceil));
+  const s = Math.max(Math.min(ceil, Math.round(pay * 1.12)), Math.min(floor, ceil));
+  if (s > pay && s <= bill) return s;
+  const mid = Math.floor((pay + bill) / 2);
+  return mid > pay && mid <= bill ? mid : bill;
 };
+
+/** Shown instead of the usual rate checks when no submit rate can work (bill below pay). */
+export const noMargin = (pay: number, bill: number, fromPosting = false) => pay > 0 && bill > 0 && bill < pay
+  ? fromPosting
+    ? `The posted $${bill}/hr is below the $${pay}/hr pay rate. Job boards show what the employer pays, not the vendor's bill rate: enter the vendor's bill rate.`
+    : `The $${bill}/hr bill rate is below the $${pay}/hr pay rate. Ask the vendor for more or agree a lower pay rate.`
+  : '';
+
+/**
+ * One line about the rates, the same rules as the server: pay ≤ submit ≤ bill. Submitting at the pay rate is allowed
+ * (it's flagged as no margin). kind: 'error' blocks submitting, 'warn' doesn't, 'ok' is the margin.
+ */
+export function rateCheck(pay: number, submit: number, bill: number, opts: { fromPosting?: boolean; showMargin?: boolean } = {}):
+  { kind: 'error' | 'warn' | 'ok'; text: string } | null {
+  const nm = noMargin(pay, bill, opts.fromPosting);
+  if (nm) return { kind: 'error', text: nm };
+  if (bill > 0 && submit > bill) return { kind: 'error', text: `Above the $${bill}/hr bill rate` };
+  if (submit > 0 && pay > 0 && submit < pay) return { kind: 'error', text: `Below the $${pay}/hr pay rate` };
+  if (submit > 0 && pay > 0 && submit === pay) return { kind: 'warn', text: 'No margin: you are submitting at the consultant pay rate.' };
+  if (opts.showMargin && submit > 0 && pay > 0) return { kind: 'ok', text: `Margin $${(submit - pay).toFixed(2)}/hr (${Math.round((submit - pay) / submit * 100)}%)` };
+  return null;
+}
+export const rateColor = (k?: 'error' | 'warn' | 'ok') => (k === 'error' ? 'var(--bad)' : k === 'warn' ? 'var(--warn, #b45309)' : 'var(--muted)');
 
 /** Submit a consultant to a requirement: RTR required, rate checks, AI rate advice. */
 export function SubmitDialog({ consultantId, requirementId, onClose, onDone }: { consultantId: number; requirementId: number; onClose: () => void; onDone?: () => void }) {
@@ -136,8 +165,8 @@ export function SubmitDialog({ consultantId, requirementId, onClose, onDone }: {
   }, [consultantId, requirementId, onError, onClose]);
 
   const sr = Number(submitRate), pr = Number(payRate);
-  const rateMsg = !r ? '' : sr > r.rate ? `Above the $${r.rate}/hr bill rate` : sr && pr && sr <= pr ? 'Must be above the pay rate'
-    : can('margin.view') && sr ? `Margin $${(sr - pr).toFixed(2)}/hr (${Math.round((sr - pr) / sr * 100)}%)` : '';
+  const check = r ? rateCheck(pr, sr, r.rate, { showMargin: can('margin.view') }) : null;
+  const rateMsg = check?.text ?? '';
 
   const aiRate = async () => {
     setAdvice('…');
@@ -171,7 +200,7 @@ export function SubmitDialog({ consultantId, requirementId, onClose, onDone }: {
           </div>
           <div className="flex" style={{ margin: '-4px 0 12px' }}>
             <button className="btn btn-sm btn-outline" onClick={aiRate}>✦ AI rate advice</button>
-            <span className="muted" style={{ fontSize: 12.5, color: rateMsg.startsWith('Above') || rateMsg.startsWith('Must') ? 'var(--bad)' : undefined }}>{advice === '…' ? <Spinner dark /> : advice ?? rateMsg}</span>
+            <span className="muted" style={{ fontSize: 12.5, color: check ? rateColor(check.kind) : undefined }}>{advice === '…' ? <Spinner dark /> : advice ?? rateMsg}</span>
           </div>
           <Field label="Notes for vendor" error={errors.notes}><textarea className="inp" style={{ minHeight: 70 }} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Availability, interview slots…" /></Field>
           <Field error={errors.rtrSigned}>

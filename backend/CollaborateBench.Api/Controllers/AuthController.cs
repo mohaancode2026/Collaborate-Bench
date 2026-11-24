@@ -95,6 +95,14 @@ public sealed class AuthController(AppDbContext db, TokenService tokens, AuditSe
             throw new AppException(403, "ACCOUNT_DEACTIVATED", "Account deactivated", "Your account has been deactivated. Contact your admin if you think this is a mistake.");
         }
 
+        // FRD-001: everyone signs in with Outlook (Microsoft). Admins keep the password as a break-glass way in.
+        if (ms.Options.Configured && ms.Options.RequireMicrosoftLogin && u.Role.Name != "Admin")
+        {
+            await audit.LogAsync("LOGIN_FAIL", "Password sign-in blocked: Outlook sign-in required", "User", u.UserId, "Denied", u.UserId);
+            throw new AppException(403, "MICROSOFT_LOGIN_REQUIRED", "Sign in with Outlook",
+                "Your company signs in with Outlook. Use \"Sign in with Microsoft\" with your work email.");
+        }
+
         u.FailedLoginCount = 0;
         u.LockoutEndUtc = null;
         u.LastLoginUtc = DateTime.UtcNow;
@@ -106,7 +114,12 @@ public sealed class AuthController(AppDbContext db, TokenService tokens, AuditSe
 
     /// <summary>Which sign-in options are available (whether "Sign in with Microsoft" is configured), for the login page.</summary>
     [AllowAnonymous, HttpGet("providers")]
-    public object Providers() => new { microsoft = ms.Options.Configured };
+    public object Providers() => new
+    {
+        microsoft = ms.Options.Configured,
+        // False = Outlook sign-in only; the page keeps a small "Admin sign-in" link for the password.
+        password = !(ms.Options.Configured && ms.Options.RequireMicrosoftLogin),
+    };
 
     /// <summary>Returns the Microsoft sign-in URL. Mode "connect" links Outlook to the signed-in user (password users included).</summary>
     [AllowAnonymous, HttpPost("microsoft/start"), EnableRateLimiting("login")]

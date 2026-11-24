@@ -37,7 +37,7 @@ export default function Rates() {
               <div className="cr"><span>Max pay rate at 15% margin</span><b className="mono">{money(toUs * 0.85 / burden)}/hr</b></div>
             </div>
             {m < 0 ? <div className="mt" style={{ background: 'rgba(239,68,68,.25)', padding: 10, borderRadius: 10 }}>⚠ Negative margin: renegotiate the rate or lower the pay rate.</div>
-              : mp < 8 && <div className="mt" style={{ background: 'rgba(245,158,11,.25)', padding: 10, borderRadius: 10 }}>⚠ Margin under 8%. Delivery Manager approval recommended.</div>}
+              : mp < 8 && <div className="mt" style={{ background: 'rgba(245,158,11,.25)', padding: 10, borderRadius: 10 }}>⚠ Margin under 8%. Director of Sales approval recommended.</div>}
           </>}</div>
           {ok && <div className="chain">
             {[['End client', v.client], ['Prime keeps', v.client * v.prime / 100], ['Tier‑1 keeps', afterPrime * v.t1 / 100], ['You keep', m], ['Consultant', v.pay]].map(([l, x], i) =>

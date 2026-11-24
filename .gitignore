@@ -16,3 +16,6 @@ TestResults/
 *.pem
 secrets.json
 dpkeys/
+
+# Stored resume files (candidates' personal data)
+backend/CollaborateBench.Api/App_Data/

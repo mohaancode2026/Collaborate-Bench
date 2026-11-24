@@ -113,8 +113,12 @@ public sealed class AiService(ClaudeClient claude, DataService data, ICurrentUse
     // ---------- Rate advice ----------
     public async Task<RateAdvice> RateAdviceAsync(ConsultantDto c, RequirementDto r, CancellationToken ct)
     {
-        var fallback = Matching.SuggestRate(c.Rate, r.Rate);
-        var why = $"Keeps about 10–15% over the ${c.Rate:0}/hr pay rate and leaves the vendor room under the ${r.Rate:0}/hr bill rate.";
+        // Always inside the submission rules (pay ≤ submit ≤ bill); at the pay rate when bill equals pay.
+        var fallback = Matching.TrySuggestRate(c.Rate, r.Rate) ?? r.Rate;
+        var why = r.Rate <= c.Rate
+            ? $"The ${r.Rate:0}/hr bill rate leaves no margin over the ${c.Rate:0}/hr pay rate, so this submits at cost. Ask the vendor for more if you can."
+            : $"Keeps about 10–15% over the ${c.Rate:0}/hr pay rate and leaves the vendor room under the ${r.Rate:0}/hr bill rate.";
+        if (r.Rate <= c.Rate) return new(fallback, why, "rules");
         var m = Matching.Score(c, r);
         var j = await claude.JsonAsync("RateAdvice", Persona,
             $"Suggest the hourly rate our firm should submit to the vendor. Consultant pay rate ${c.Rate}/hr ({c.Visa}, {c.Exp} yrs, match {m.Score}%). " +

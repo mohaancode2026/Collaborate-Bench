@@ -47,6 +47,8 @@ public class User
     public DateTime? LockoutEndUtc { get; set; }
     public DateTime? LastLoginUtc { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+    /// <summary>Added at the bottom of emails the user writes in the portal. Null = a default built from their name and company.</summary>
+    public string? EmailSignature { get; set; }
 }
 
 /// <summary>Closure table maintained by sec.usp_RebuildHierarchy (ancestor → every descendant, incl. self).</summary>
@@ -91,9 +93,52 @@ public class Consultant
     public string? Education { get; set; }
     public string? Certifications { get; set; }
     public byte? UsExperienceYears { get; set; }
+    // ----- marketing intake (the consultant's onboarding form) -----
+    /// <summary>Name exactly as on the passport / ID.</summary>
+    public string? LegalName { get; set; }
+    /// <summary>The technology they're marketed for, e.g. "Java Full Stack with React".</summary>
+    public string? MarketingTechnology { get; set; }
+    /// <summary>Job titles they apply for, comma separated.</summary>
+    public string? Keywords { get; set; }
+    /// <summary>The marketing number (Google Voice); <see cref="Phone"/> stays the main contact number.</summary>
+    public string? GoogleVoice { get; set; }
+    public string? PersonalPhone { get; set; }
+    public DateTime? DateOfBirth { get; set; }
+    /// <summary>Last 4 digits of the SSN only. The full number is never stored.</summary>
+    public string? SsnLast4 { get; set; }
+    /// <summary>Driver's License | State ID | None</summary>
+    public string? IdType { get; set; }
+    public string? Bachelors { get; set; }
+    public string? Masters { get; set; }
+    public string? LocationConstraints { get; set; }
+    /// <summary>Free text: "NA", a date, "Available now".</summary>
+    public string? CurrentProjectEnd { get; set; }
+    /// <summary>Vendors and clients this consultant must not be submitted to (already submitted elsewhere, conflicts).</summary>
+    public string? DoNotSubmit { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public byte[] RowVer { get; set; } = Array.Empty<byte>();
+}
+
+/// <summary>A copy of a consultant's document (DL, EAD, passport, I-20, visa, …) kept on disk next to the resumes.</summary>
+public class ConsultantDocument
+{
+    public int ConsultantDocumentId { get; set; }
+    public int ConsultantId { get; set; }
+    public Consultant Consultant { get; set; } = null!;
+    /// <summary>Passport | DriversLicense | StateId | EAD | I20 | Visa | I797 | SSN | Degree | Other</summary>
+    public string Kind { get; set; } = "Other";
+    public string FileName { get; set; } = "";
+    /// <summary>Relative to Storage:ResumesPath, e.g. "c12/doc-5.pdf".</summary>
+    public string FilePath { get; set; } = "";
+    public string ContentType { get; set; } = "application/octet-stream";
+    public long SizeBytes { get; set; }
+    public string? Note { get; set; }
+    /// <summary>When the document expires (EAD end date, passport expiry), if known.</summary>
+    public DateTime? ExpiresOn { get; set; }
+    public int UploadedByUserId { get; set; }
+    public User UploadedBy { get; set; } = null!;
+    public DateTime UploadedUtc { get; set; } = DateTime.UtcNow;
 }
 
 public class Resume
@@ -101,6 +146,7 @@ public class Resume
     public int ResumeId { get; set; }
     public int ConsultantId { get; set; }
     public string? FileName { get; set; }
+    /// <summary>Where the uploaded file is kept, relative to Storage:ResumesPath (e.g. "c12/original-34.pdf"). Null for pasted text.</summary>
     public string? BlobUri { get; set; }
     public string ExtractedText { get; set; } = "";
     public string ParsedBy { get; set; } = "rules";
@@ -385,6 +431,8 @@ public class TailoredResume
     public string Engine { get; set; } = "rules";
     public string? Notice { get; set; }
     public bool HideContact { get; set; } = true;
+    /// <summary>The Word file of the current content, relative to Storage:ResumesPath. Rewritten on every save.</summary>
+    public string? FilePath { get; set; }
     public int CreatedByUserId { get; set; }
     public User? CreatedBy { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
@@ -545,4 +593,96 @@ public class CandidateReminder
     public string Status { get; set; } = "Open";
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ClosedUtc { get; set; }
+}
+
+/// <summary>An email from the user's Outlook inbox, read and triaged by AI (AI Inbox). Only the first part of the body is kept.</summary>
+public class InboxItem
+{
+    public int InboxItemId { get; set; }
+    public int UserId { get; set; }
+    public User User { get; set; } = null!;
+    public string MessageId { get; set; } = "";
+    public string? ConversationId { get; set; }
+    /// <summary>In = received (Inbox), Out = sent by the user (Sent Items). Sent mail isn't AI-triaged.</summary>
+    public string Direction { get; set; } = "In";
+    public string FromAddress { get; set; } = "";
+    public string? FromName { get; set; }
+    /// <summary>Recipients (To and Cc), comma separated. Filled for sent mail.</summary>
+    public string? ToAddresses { get; set; }
+    public string Subject { get; set; } = "";
+    /// <summary>Plain-text body, cut to 8,000 characters.</summary>
+    public string Body { get; set; } = "";
+    public DateTime ReceivedUtc { get; set; }
+    public bool HasAttachments { get; set; }
+    /// <summary>The email's files (JSON list of Outlook attachment id, name, size, content type); the files stay in Outlook.
+    /// Null = not read yet (filled when the email is opened).</summary>
+    public string? AttachmentsJson { get; set; }
+    /// <summary>JobListing | Interview | FollowUp | Rate | Rejection | Other | Noise</summary>
+    public string Category { get; set; } = "Other";
+    /// <summary>High | Medium | Low</summary>
+    public string Priority { get; set; } = "Low";
+    public string Summary { get; set; } = "";
+    /// <summary>Why the priority was chosen, shown to the user.</summary>
+    public string? PriorityReason { get; set; }
+    /// <summary>The job in the email (JSON: title, client, location, mode, type, rate, skills, minYears, visas). Job listings only.</summary>
+    public string? JobJson { get; set; }
+    /// <summary>The user's own consultants that fit the job (JSON list of id, name, score, why, exp, resumeReady).</summary>
+    public string? MatchesJson { get; set; }
+    /// <summary>True when the email needs an answer from us (AI follow-up draft offered).</summary>
+    public bool NeedsReply { get; set; }
+    /// <summary>"claude" or "rules"</summary>
+    public string Engine { get; set; } = "rules";
+    /// <summary>New | Done | Dismissed</summary>
+    public string Status { get; set; } = "New";
+    /// <summary>The requirement created from this job email, once saved.</summary>
+    public int? RequirementId { get; set; }
+    /// <summary>The consultant the email is about (their name appears in it), if one of the bench.</summary>
+    public int? ConsultantId { get; set; }
+    /// <summary>What the vendor asks us to send (JSON list, e.g. ["Resume", "Visa copy", "DL"]). Details/documents requests only.</summary>
+    public string? RequestsJson { get; set; }
+    /// <summary>Contracts | Insurance | Immigration: a question for that team (forward it).</summary>
+    public string? Team { get; set; }
+    /// <summary>Interview slots offered in the email (JSON list of UTC times).</summary>
+    public string? SlotsJson { get; set; }
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>Something to do that came out of an email (or was added by hand): a task, a follow-up or an interview.</summary>
+public class InboxTask
+{
+    public int InboxTaskId { get; set; }
+    public int UserId { get; set; }
+    public int? InboxItemId { get; set; }
+    public InboxItem? InboxItem { get; set; }
+    /// <summary>Task | FollowUp | Interview</summary>
+    public string Kind { get; set; } = "Task";
+    public string Title { get; set; } = "";
+    public DateTime? DueUtc { get; set; }
+    public int? DurationMinutes { get; set; }
+    public int? ConsultantId { get; set; }
+    /// <summary>Interview details: Zoom/Teams link, phone number or address, and notes.</summary>
+    public string? Location { get; set; }
+    public string? Notes { get; set; }
+    /// <summary>When the interview details were emailed to the consultant.</summary>
+    public DateTime? SharedUtc { get; set; }
+    /// <summary>Open | Done | Dismissed</summary>
+    public string Status { get; set; } = "Open";
+    public bool Auto { get; set; }
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? ClosedUtc { get; set; }
+    /// <summary>What "Open draft" writes: Reply (answer the email) | Nudge (no reply to what we sent) | Feedback (after an interview) |
+    /// AskConsultant (collect missing details/documents) | Slots (send the interview slots to the consultant) | Forward:Team | Mock.</summary>
+    public string? Action { get; set; }
+    /// <summary>The task this one came from (e.g. the interview a feedback reminder belongs to).</summary>
+    public int? ParentTaskId { get; set; }
+    /// <summary>Interviews: Client call | Technical call | L1 | L2 | Final | Other.</summary>
+    public string? InterviewType { get; set; }
+    /// <summary>Interviews: the consultant has no interview practice yet, so a mock session is planned before it.</summary>
+    public bool MockSession { get; set; }
+    /// <summary>Interviews: the slots the vendor offered (JSON list of UTC times).</summary>
+    public string? SlotsJson { get; set; }
+    /// <summary>Recurring follow-ups (after a submission): the next reminder comes this many business days after this one is done.</summary>
+    public int? RepeatBusinessDays { get; set; }
+    /// <summary>Position in a recurring chain (1 = first reminder).</summary>
+    public int Sequence { get; set; } = 1;
 }

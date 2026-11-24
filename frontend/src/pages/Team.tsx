@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, api, TeamMember } from '../api';
 import { useAuth } from '../auth';
+import { Paged, Pager } from '../pager';
+import { roleLabel } from '../roles';
 import { Alert, Avatar, Empty, Field, FieldErrors, Modal, Spinner, ago, copyText, useConfirm, useErrorHandler, useToast } from '../ui';
 
 interface Matrix { roles: { id: number; name: string; scope: string }[]; permissions: { code: string; label: string }[]; grants: Record<string, string[]>; }
@@ -46,7 +48,7 @@ function Org({ onEdit }: { onEdit: (u: TeamMember) => void }) {
     return (
       <li><div className={`tnode${u.active ? '' : ' off'}${u.id === user?.id ? ' me' : ''}`}><Avatar name={u.name} size={36} />
         <div style={{ flex: 1, minWidth: 0 }}><b>{u.name}{u.id === user?.id && <span className="tag s"> You</span>}{!u.active && <span className="tag r"> Deactivated</span>}{u.locked && <span className="tag y"> Locked</span>}</b>
-          <small>{u.role}{u.team ? ` · ${u.team}` : ''} · {u.email}{u.lastLoginUtc ? ` · last sign-in ${ago(u.lastLoginUtc)}` : ''}</small>
+          <small>{roleLabel(u.role)}{u.team ? ` · ${u.team}` : ''} · {u.email}{u.lastLoginUtc ? ` · last sign-in ${ago(u.lastLoginUtc)}` : ''}</small>
           <div style={{ marginTop: 4 }}><span className="tag">{u.consultants} consultants</span><span className="tag c">{u.activeSubmissions} active subs</span><span className="tag g">{u.placed} placed</span></div></div>
         {can('team.manage') && u.id !== user?.id && !(u.role === 'Admin' && user?.role !== 'Admin') && <button className="btn btn-sm btn-outline" onClick={() => onEdit(u)}>Manage</button>}
       </div>{kids.length > 0 && <ul>{kids.map(k => <Node key={k.id} u={k} />)}</ul>}</li>
@@ -78,8 +80,8 @@ function Perms() {
   if (!m) return <Empty><Spinner dark /> Loading…</Empty>;
   const scopeLabel: Record<string, string> = { ALL: 'All teams', TEAM: 'Own + team', OWN: 'Own only' };
   return (
-    <div className="card"><div className="card-h"><h3>Permission matrix</h3><span className="muted" style={{ fontSize: 13 }}>Your role: <b>{user?.role}</b></span></div>
-      <div className="tw"><table className="matrix"><thead><tr><th>Permission</th>{m.roles.map(r => <th key={r.id} className={r.name === user?.role ? 'cur' : ''}>{r.name}</th>)}</tr></thead><tbody>
+    <div className="card"><div className="card-h"><h3>Permission matrix</h3><span className="muted" style={{ fontSize: 13 }}>Your role: <b>{roleLabel(user?.role)}</b></span></div>
+      <div className="tw"><table className="matrix"><thead><tr><th>Permission</th>{m.roles.map(r => <th key={r.id} className={r.name === user?.role ? 'cur' : ''}>{roleLabel(r.name)}</th>)}</tr></thead><tbody>
         {m.permissions.map(p => <tr key={p.code}><td>{p.label[0].toUpperCase() + p.label.slice(1)}<br /><small className="muted mono">{p.code}</small></td>
           {m.roles.map(r => <td key={r.id} className={r.name === user?.role ? 'cur' : ''} style={{ textAlign: 'center' }}>{m.grants[r.name]?.includes(p.code) ? <span className="yes">✓</span> : <span className="no">—</span>}</td>)}</tr>)}
         <tr><td><b>Data visibility (row-level security)</b></td>{m.roles.map(r => <td key={r.id} className={r.name === user?.role ? 'cur' : ''} style={{ textAlign: 'center' }}>{scopeLabel[r.scope]}</td>)}</tr>
@@ -87,18 +89,42 @@ function Perms() {
   );
 }
 
+/** The audit trail, one page at a time from the server (the log grows with every action, so it's never loaded whole). */
 function Audit() {
   const onError = useErrorHandler();
   const [f, setF] = useState<'' | 'Denied' | 'Success'>('');
-  const [rows, setRows] = useState<Activity[] | null>(null);
-  useEffect(() => { setRows(null); api<Activity[]>('/activity/audit', { query: { outcome: f } }).then(setRows).catch(e => { setRows([]); onError(e); }); }, [f, onError]);
+  const [qInput, setQInput] = useState('');
+  const [q, setQ] = useState('');
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(50);
+  const [data, setData] = useState<Paged<Activity> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const seq = useRef(0);
+  useEffect(() => { const t = setTimeout(() => { setQ(qInput.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [qInput]);
+  useEffect(() => {
+    const mine = ++seq.current;
+    setBusy(true);
+    api<Paged<Activity>>('/activity/audit/page', { query: { outcome: f || undefined, q: q || undefined, page, pageSize: size } })
+      .then(r => { if (mine === seq.current) setData(r); })
+      .catch(e => { if (mine === seq.current) { onError(e); setData(d => d ?? { items: [], total: 0, page: 1, pageSize: size }); } })
+      .finally(() => { if (mine === seq.current) setBusy(false); });
+  }, [f, q, page, size, onError]);
+  const rows = data?.items ?? [];
   return (
-    <div className="card"><div className="card-h"><h3>Audit log</h3><div className="tabs">{([['', 'All events'], ['Denied', 'Denied access'], ['Success', 'Successful']] as const).map(([k, t]) =>
-      <button key={k} className={f === k ? 'on' : ''} onClick={() => setF(k)}>{t}</button>)}</div></div>
-      {!rows ? <Empty><Spinner dark /></Empty> : <div className="tw"><table><thead><tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Detail</th></tr></thead><tbody>
-        {rows.map(a => <tr key={a.id} className={a.outcome !== 'Success' ? 'deny' : ''}><td style={{ whiteSpace: 'nowrap' }}>{new Date(a.createdUtc).toLocaleString()}</td><td>{a.userName}</td><td>{a.role}</td>
-          <td><span className={`tag ${a.outcome === 'Success' ? 's' : 'r'}`}>{a.action}</span></td><td>{a.detail}</td></tr>)}
-      </tbody></table>{rows.length === 0 && <Empty>No events.</Empty>}</div>}
+    <div className="card"><div className="card-h"><h3>Audit log</h3>
+      <div className="flex" style={{ gap: 8 }}>
+        <div className="tabs">{([['', 'All events'], ['Denied', 'Denied access'], ['Success', 'Successful']] as const).map(([k, t]) =>
+          <button key={k} className={f === k ? 'on' : ''} onClick={() => { setF(k); setPage(1); }}>{t}</button>)}</div>
+        <input className="inp" type="search" placeholder="Search user, action, detail…" aria-label="Search the audit log" style={{ width: 240 }} value={qInput} onChange={e => setQInput(e.target.value)} />
+      </div></div>
+      {!data ? <Empty><Spinner dark /></Empty> : <>
+        <div className="tw" style={{ opacity: busy ? 0.6 : 1, transition: 'opacity .15s' }}><table><thead><tr><th className="slno">Sl No</th><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Detail</th></tr></thead><tbody>
+          {rows.map((a, i) => <tr key={a.id} className={a.outcome !== 'Success' ? 'deny' : ''}><td className="slno">{(data.page - 1) * data.pageSize + i + 1}</td><td style={{ whiteSpace: 'nowrap' }}>{new Date(a.createdUtc).toLocaleString()}</td><td>{a.userName}</td><td>{roleLabel(a.role)}</td>
+            <td><span className={`tag ${a.outcome === 'Success' ? 's' : 'r'}`}>{a.action}</span></td><td>{a.detail}</td></tr>)}
+        </tbody></table>{rows.length === 0 && <Empty>{q ? `Nothing matches “${q}”.` : 'No events.'}</Empty>}</div>
+        <Pager page={data.page} pageSize={data.pageSize} total={data.total} busy={busy} sizes={[25, 50, 100, 200]}
+          onPage={setPage} onPageSize={n => { setSize(n); setPage(1); }} />
+      </>}
     </div>
   );
 }
@@ -114,14 +140,15 @@ function UserDialog({ user, onClose, onSaved }: { user: TeamMember | null; onClo
   const [busy, setBusy] = useState(false);
   const [temp, setTemp] = useState<string | null>(null);
   useEffect(() => { api<TeamMember[]>('/users').then(setAll).catch(onError); }, [onError]);
-  const roles = me?.role === 'Admin' ? ['Admin', 'Delivery Manager', 'Team Lead', 'Recruiter'] : ['Team Lead', 'Recruiter'];
-  const managers = all.filter(u => u.active && u.id !== user?.id && (d.role === 'Recruiter' ? u.role === 'Team Lead' : d.role === 'Team Lead' ? u.role === 'Delivery Manager' : false));
+  const roles = me?.role === 'Admin' ? ['Admin', 'Delivery Manager', 'Manager', 'Team Lead', 'Recruiter'] : ['Manager', 'Team Lead', 'Recruiter'];
+  const managers = all.filter(u => u.active && u.id !== user?.id &&
+    (d.role === 'Recruiter' ? u.role === 'Team Lead' : d.role === 'Team Lead' || d.role === 'Manager' ? u.role === 'Delivery Manager' : false));
 
   const save = async () => {
     if (user && user.active && !d.active && !await confirm({ title: 'Deactivate user?', message: `${user.name} won't be able to sign in. Their consultants and submissions move to their manager.`, okLabel: 'Deactivate', danger: true })) return;
     setBusy(true); setErrors({});
     try {
-      if (user) { await api(`/users/${user.id}`, { method: 'PUT', body: d }); notify('success', 'User updated', `${d.name} · ${d.role}`); onSaved(); }
+      if (user) { await api(`/users/${user.id}`, { method: 'PUT', body: d }); notify('success', 'User updated', `${d.name} · ${roleLabel(d.role)}`); onSaved(); }
       else { const r = await api<{ temporaryPassword: string }>('/users', { method: 'POST', body: d }); setTemp(r.temporaryPassword); notify('success', 'User created', d.name); }
     } catch (e) { onError(e, setErrors); } finally { setBusy(false); }
   };
@@ -143,9 +170,9 @@ function UserDialog({ user, onClose, onSaved }: { user: TeamMember | null; onClo
         <button className="btn btn-outline" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={save} disabled={busy}>{busy ? <Spinner /> : user ? 'Save changes' : 'Create user'}</button></>}>
       <div className="row2"><Field label="Full name *" error={errors.name}><input className="inp" value={d.name} onChange={e => setD({ ...d, name: e.target.value })} /></Field>
         <Field label="Work email *" error={errors.email}><input className="inp" value={d.email} onChange={e => setD({ ...d, email: e.target.value })} /></Field></div>
-      <div className="row2"><Field label="Role *" error={errors.role}><select className="inp" value={d.role} onChange={e => setD({ ...d, role: e.target.value, managerId: undefined })}>{roles.map(r => <option key={r}>{r}</option>)}</select></Field>
+      <div className="row2"><Field label="Role *" error={errors.role}><select className="inp" value={d.role} onChange={e => setD({ ...d, role: e.target.value, managerId: undefined })}>{roles.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}</select></Field>
         <Field label="Reports to" error={errors.managerId}><select className="inp" value={d.managerId ?? ''} onChange={e => setD({ ...d, managerId: e.target.value ? Number(e.target.value) : undefined })}>
-          <option value="">{managers.length ? 'Choose…' : '— none (top level) —'}</option>{managers.map(m => <option key={m.id} value={m.id}>{m.name} · {m.role}{m.team ? ` · ${m.team}` : ''}</option>)}</select></Field></div>
+          <option value="">{managers.length ? 'Choose…' : '— none (top level) —'}</option>{managers.map(m => <option key={m.id} value={m.id}>{m.name} · {roleLabel(m.role)}{m.team ? ` · ${m.team}` : ''}</option>)}</select></Field></div>
       {d.role === 'Team Lead' && <Field label="Team name *" error={errors.team}><input className="inp" value={d.team} onChange={e => setD({ ...d, team: e.target.value })} placeholder="e.g. Team Gamma" /></Field>}
       {user && <label className="check"><input type="checkbox" checked={d.active} onChange={e => setD({ ...d, active: e.target.checked })} /><span>Account active</span></label>}
       {!user && <Alert type="info" title="A temporary password is generated">You'll see it once after creating the user.</Alert>}

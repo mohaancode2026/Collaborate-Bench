@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { AlertPrefs, api, AutopilotItem, AutopilotSettings, AutopilotSummary, VendorEmail, VendorReply } from '../api';
 import { useAuth } from '../auth';
 import { ComposeDialog } from '../compose';
+import { rateCheck, rateColor, suggest } from '../components';
 import { Alert, Empty, Field, FieldErrors, Modal, Ring, Spinner, ago, money, useConfirm, useErrorHandler, useToast } from '../ui';
 
 type Tab = 'approval' | 'rtr' | 'submitted' | 'replies' | 'attention' | 'skipped';
@@ -118,6 +119,17 @@ function ApprovalCard({ item, canApprove, onDone }: { item: AutopilotItem; canAp
   const [open, setOpen] = useState(false);
   const num = (v: string) => (v === '' ? '' : Number(v));
   const margin = Number(f.submitRate) - Number(f.payRate);
+  const pay = Number(f.payRate), sub = Number(f.submitRate), bill = Number(f.billRate);
+  // The same checks the server makes (pay ≤ submit ≤ bill), shown while editing so Approve doesn't fail on rates.
+  const check = rateCheck(pay, sub, bill, { fromPosting: external, showMargin: true });
+  // Entering a bill rate (or changing pay) suggests a submit rate when the current one doesn't fit.
+  const setRates = (next: typeof f) => {
+    const p = Number(next.payRate), b = Number(next.billRate), s = Number(next.submitRate);
+    if (p > 0 && b >= p && !(s >= p && s <= b)) next = { ...next, submitRate: suggest(p, b) };
+    setF(next);
+  };
+  // While editing, the live rate check replaces the saved rate note, so the same warning isn't shown twice.
+  const savedNote = open && item.error && /pay rate/i.test(item.error) ? null : item.error;
 
   const approve = async () => {
     setBusy(true); setErrors({});
@@ -150,16 +162,17 @@ function ApprovalCard({ item, canApprove, onDone }: { item: AutopilotItem; canAp
           <span>Pay <b>{item.payRate ? money(item.payRate) : '–'}</b></span><span>Submit <b>{item.submitRate ? money(item.submitRate) : '–'}</b></span><span>Bill <b>{item.billRate ? money(item.billRate) : '–'}</b></span>
         </div>
       </div>
-      {item.error && <Alert type="warning" title={item.status === 'Prepared' ? 'Check before approving' : item.statusLabel}>{item.error}</Alert>}
-      {item.resumeWarnings > 0 && !item.error && <Alert type="warning" title={`${item.resumeWarnings} item(s) in the tailored resume need checking`}>Open the resume and confirm them before approving.</Alert>}
+      {savedNote && <Alert type="warning" title={item.status === 'Prepared' ? 'Check before approving' : item.statusLabel}>{savedNote}</Alert>}
+      {item.resumeWarnings > 0 && !savedNote && <Alert type="warning" title={`${item.resumeWarnings} item(s) in the tailored resume need checking`}>Open the resume and confirm them before approving.</Alert>}
 
       {open && <div className="ap-edit">
         <div className="row3">
-          <Field label="Pay rate ($/hr) *" error={errors.payRate}><input className="inp" type="number" value={f.payRate} onChange={e => setF({ ...f, payRate: num(e.target.value) })} /></Field>
+          <Field label="Pay rate ($/hr) *" error={errors.payRate}><input className="inp" type="number" value={f.payRate} onChange={e => setRates({ ...f, payRate: num(e.target.value) })} /></Field>
           <Field label="Submit rate ($/hr) *" error={errors.submitRate}><input className="inp" type="number" value={f.submitRate} onChange={e => setF({ ...f, submitRate: num(e.target.value) })} /></Field>
-          <Field label={`Bill rate ($/hr)${external ? ' *' : ''}`} error={errors.billRate}><input className="inp" type="number" value={f.billRate} disabled={!external} onChange={e => setF({ ...f, billRate: num(e.target.value) })} /></Field>
+          <Field label={`Bill rate ($/hr)${external ? ' *' : ''}`} error={errors.billRate}><input className="inp" type="number" value={f.billRate} disabled={!external}
+            placeholder={external ? "Vendor's bill rate" : undefined} onChange={e => setRates({ ...f, billRate: num(e.target.value) })} /></Field>
         </div>
-        {margin > 0 && <p className="muted" style={{ fontSize: 12.5, marginTop: -6 }}>Margin {money(margin)}/hr</p>}
+        {check && <p style={{ fontSize: 12.5, marginTop: -6, color: rateColor(check.kind) }}>{check.kind === 'ok' ? `Margin ${money(margin)}/hr` : check.text}</p>}
         {external && <Field label="Contract type *" error={errors.contractType}><select className="inp" value={f.contractType} onChange={e => setF({ ...f, contractType: e.target.value })}>{['C2C', 'W2', '1099'].map(t => <option key={t}>{t}</option>)}</select></Field>}
         <Field label="Vendor contact email *" error={errors.vendorEmail}><input className="inp" value={f.vendorEmail} onChange={e => setF({ ...f, vendorEmail: e.target.value })} placeholder="recruiter@vendor.com" /></Field>
         <Field label="Subject *" error={errors.emailSubject}><input className="inp" value={f.emailSubject} onChange={e => setF({ ...f, emailSubject: e.target.value })} /></Field>
@@ -186,7 +199,7 @@ function ItemTable({ tab, items, onChanged }: { tab: Tab; items: AutopilotItem[]
     catch (e) { onError(e); }
   };
   return (
-    <div className="tw"><table><thead><tr><th>Consultant → job</th><th>Match</th><th>{tab === 'submitted' ? 'Submitted' : tab === 'rtr' ? 'RTR' : 'Status'}</th><th>Recruiter</th><th /></tr></thead><tbody>
+    <div className="tw"><table><thead><tr><th>Consultant → job</th><th>Match</th><th>{tab === 'submitted' ? 'Submitted' : tab === 'rtr' ? 'RTR' : 'Status'}</th><th>Executive</th><th /></tr></thead><tbody>
       {items.map(i => (
         <tr key={i.id}>
           <td><b>{i.consultantName}</b> → {i.jobTitle}<div className="muted" style={{ fontSize: 12 }}>{[i.client, i.vendor].filter(Boolean).join(' · ')}</div></td>

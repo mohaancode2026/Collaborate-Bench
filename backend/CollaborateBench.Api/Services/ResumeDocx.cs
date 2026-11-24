@@ -59,7 +59,7 @@ public static class ResumeDocx
 
             if (d.Shows("experience") && (d.Experience.Count > 0 || !string.IsNullOrWhiteSpace(d.AdditionalText)))
             {
-                body.Append(Heading("Professional Experience"));
+                if (!d.WholeTextOnly) body.Append(Heading("Professional Experience"));
                 foreach (var j in d.Experience)
                 {
                     var dates = string.Join(" – ", new[] { j.Start, j.End }.Where(x => !string.IsNullOrWhiteSpace(x)));

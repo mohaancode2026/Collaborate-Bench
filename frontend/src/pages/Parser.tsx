@@ -2,8 +2,8 @@ import { DragEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, Consultant, Match } from '../api';
 import { ConsultantDraft, ConsultantForm, emptyDraft, toInput } from '../components';
-import { AiBadge, Alert, Empty, Field, FieldErrors, Spinner, scoreClass, useErrorHandler, useToast } from '../ui';
-import { fileToText } from '../resumeFile';
+import { AiBadge, Alert, Empty, Field, FieldErrors, Spinner, useErrorHandler, useToast } from '../ui';
+import { fileToText, storeResumeFile } from '../resumeFile';
 
 interface Parsed {
   name: string; title: string; email: string; phone: string; location: string; visa: string; exp: number; rate?: number | null;
@@ -17,6 +17,8 @@ export default function Parser() {
   const onError = useErrorHandler();
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState<string>();
+  /** The uploaded file, kept so it's stored with the profile when it's added to the bench. */
+  const [file, setFile] = useState<File | null>(null);
   const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [parsed, setParsed] = useState<Parsed | null>(null);
@@ -26,8 +28,8 @@ export default function Parser() {
 
   const load = async (f: File) => {
     setReading(true); setFileName(f.name);
-    try { setText((await fileToText(f)).trim()); notify('success', 'Resume loaded', `Extracted text from ${f.name}.`); }
-    catch (e) { notify('warning', 'Could not read that file', (e as Error).message || 'Try another file or paste the text.'); }
+    try { setText((await fileToText(f)).trim()); setFile(f); notify('success', 'Resume loaded', `Extracted text from ${f.name}.`); }
+    catch (e) { setFile(null); notify('warning', 'Could not read that file', (e as Error).message || 'Try another file or paste the text.'); }
     finally { setReading(false); }
   };
 
@@ -50,15 +52,18 @@ export default function Parser() {
     setBusy(true); setErrors({});
     try {
       const c = await api<Consultant>('/consultants', { method: 'POST', body: { ...toInput(draft), resumeText: text, resumeFileName: fileName, parsedBy: parsed.source } });
-      notify('success', `${c.name} added to bench`, 'Profile saved and ready for matching.');
-      nav(openMatches ? `/match?consultant=${c.id}` : '/bench');
+      // Keep the resume file itself with the new profile, so it can be attached to submissions as-is.
+      const problem = file ? await storeResumeFile(c.id, file) : null;
+      notify(problem ? 'warning' : 'success', `${c.name} added to bench`,
+        problem ? `Profile saved, but the resume file couldn't be stored: ${problem}` : file ? `Profile and resume file (${file.name}) saved, ready for matching.` : 'Profile saved and ready for matching.');
+      nav(openMatches ? `/external-jobs?consultant=${c.id}` : '/bench');
     } catch (e) { onError(e, setErrors); }
     finally { setBusy(false); }
   };
 
   return (
     <>
-      <div className="ph"><div><h1>AI Resume Parser</h1><p>Upload or paste a resume. The parsing agent extracts the profile, checks for duplicates and scores it against open requirements.</p></div></div>
+      <div className="ph"><div><h1>AI Resume Parser</h1><p>Upload or paste a resume. The parsing agent extracts the profile and checks for duplicates.</p></div></div>
       <div className="grid g12">
         <div className="card"><div className="card-h"><h3>1 · Resume input</h3></div><div className="card-b">
           <label className={`drop${over ? ' over' : ''}`} onDragOver={(e: DragEvent) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
@@ -67,7 +72,7 @@ export default function Parser() {
             <b>{fileName ?? 'Drop a resume here or click to browse'}</b><small>PDF, DOCX or TXT · max 10 MB · read in your browser</small>
             <input type="file" hidden accept=".pdf,.docx,.txt,.md" onChange={e => { const f = e.target.files?.[0]; if (f) load(f); }} />
           </label>
-          <Field label="…or paste resume text" error={errors.text} className="mt"><textarea className="inp" style={{ minHeight: 220 }} value={text} onChange={e => setText(e.target.value)} placeholder="Paste the full resume here" /></Field>
+          <Field label="…or paste resume text" error={errors.text} className="mt"><textarea className="inp" style={{ minHeight: 220 }} value={text} onChange={e => { setText(e.target.value); if (!e.target.value) setFile(null); }} placeholder="Paste the full resume here" /></Field>
           <button className="btn btn-dark" style={{ width: '100%', justifyContent: 'center' }} onClick={run} disabled={busy || reading}>{busy && !parsed ? <><Spinner /> Agent working…</> : '✦ Run parsing agent'}</button>
         </div></div>
         <div className="card"><div className="card-h"><h3>2 · Review &amp; save</h3><AiBadge source={parsed?.source} /></div><div className="card-b">
@@ -75,11 +80,6 @@ export default function Parser() {
             <>
               {parsed.duplicateWarning && <Alert type="warning" title="Possible duplicate profile">{parsed.duplicateWarning}</Alert>}
               <ConsultantForm draft={draft} set={setDraft} errors={errors} />
-              <div className="card" style={{ background: '#f8fafc', marginBottom: 14 }}><div className="card-b"><b style={{ fontSize: 13 }}>Best‑fit open requirements</b>
-                {parsed.topMatches.map(m => (
-                  <div className="flex between mt" key={m.requirementId}><div><b style={{ fontSize: 13.5 }}>{m.requirementTitle}</b> <small className="muted">· {m.client} · ${m.billRate}/hr</small><div className="why">{m.why}</div></div>
-                    <span className={`tag ${scoreClass(m.score)}`}>{m.score}%</span></div>))}
-              </div></div>
               <div className="flex"><button className="btn btn-dark" onClick={() => save(false)} disabled={busy}>+ Add to bench</button><button className="btn btn-outline" onClick={() => save(true)} disabled={busy}>Add &amp; open matches</button></div>
             </>
           )}

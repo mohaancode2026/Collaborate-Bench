@@ -26,7 +26,7 @@ public static class RecruiterReportExcel
 
         // ---------- Sheet 1: summary ----------
         var ws = wb.Worksheets.Add("Recruiter report");
-        var headers = new List<string> { "Recruiter", "Role", "Team", "Bench (current)", "Marketing (current)", "Total submissions" };
+        var headers = new List<string> { "Bench Sales Executive", "Role", "Team", "Bench (current)", "Marketing (current)", "Total submissions" };
         headers.AddRange(StageCols.Select(s => s.Label));
         headers.AddRange(["Active", "Placed", "Stuck 3d+"]);
         if (showMoney) headers.Add("Weekly margin");
@@ -48,7 +48,7 @@ public static class RecruiterReportExcel
         {
             var c = 1;
             ws.Cell(r, c++).Value = x.Name;
-            ws.Cell(r, c++).Value = x.Role;
+            ws.Cell(r, c++).Value = CollaborateBench.Api.Security.RoleNames.Label(x.Role);
             ws.Cell(r, c++).Value = x.Team ?? "";
             ws.Cell(r, c++).Value = x.Bench;
             ws.Cell(r, c++).Value = x.Marketing;
@@ -86,7 +86,7 @@ public static class RecruiterReportExcel
 
         // ---------- Sheet 2: submission detail ----------
         var ds = wb.Worksheets.Add("Submissions");
-        var dh = new List<string> { "Recruiter", "Consultant", "Consultant title", "Requirement", "Client", "Vendor", "Type", "Stage",
+        var dh = new List<string> { "Bench Sales Executive", "Consultant", "Consultant title", "Requirement", "Client", "Vendor", "Type", "Stage",
             "Days in stage", "Submit rate", "Bill rate" };
         if (showMoney) dh.AddRange(["Pay rate", "Margin / hr"]);
         dh.AddRange(["Match score", "RTR signed", "Created", "Notes"]);

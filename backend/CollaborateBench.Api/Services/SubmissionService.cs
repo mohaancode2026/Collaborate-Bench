@@ -13,9 +13,12 @@ public sealed class SubmissionService(AppDbContext db, DataService data, ICurren
     public static Validator Validate(Validator v, bool rtrSigned, decimal submitRate, decimal payRate, decimal billRate, string? notes) => v
         .Check(rtrSigned, "rtrSigned", "An RTR (Right to Represent) is required before submitting")
         .Check(submitRate > 0, "submitRate", "Enter the submit rate")
-        .Check(billRate <= 0 || submitRate <= billRate, "submitRate", $"Can't exceed the ${billRate:0}/hr bill rate")
+        // Bill below pay: no submit rate can work, so say that once instead of two contradicting errors.
+        // Submitting at the pay rate (no margin) is allowed; the screens warn about it.
+        .Check(billRate <= 0 || payRate <= 0 || billRate >= payRate, "billRate", Matching.NoMarginMessage(payRate, billRate, fromJobPosting: false))
+        .Check(billRate <= 0 || payRate > billRate || submitRate <= billRate, "submitRate", $"Can't exceed the ${billRate:0}/hr bill rate")
         .Check(payRate > 0, "payRate", "Enter the consultant's pay rate")
-        .Check(submitRate > payRate, "submitRate", "Must be higher than the consultant pay rate")
+        .Check(submitRate >= payRate, "submitRate", "Can't be below the consultant pay rate")
         .Check((notes?.Length ?? 0) <= 1000, "notes", "Keep notes under 1,000 characters");
 
     public static void EnsureAvailable(ConsultantDto c)

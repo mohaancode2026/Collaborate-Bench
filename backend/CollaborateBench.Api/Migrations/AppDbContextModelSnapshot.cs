@@ -93,14 +93,16 @@ namespace CollaborateBench.Api.Migrations
 
                     b.Property<string>("Outcome")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasColumnType("nvarchar(450)");
 
                     b.Property<int?>("UserId")
                         .HasColumnType("int");
 
                     b.HasKey("AuditId");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("Outcome", "AuditId");
+
+                    b.HasIndex("UserId", "AuditId");
 
                     b.ToTable("AuditLog", "sec");
                 });
@@ -458,12 +460,27 @@ namespace CollaborateBench.Api.Migrations
                         .HasMaxLength(60)
                         .HasColumnType("nvarchar(60)");
 
+                    b.Property<string>("Bachelors")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
                     b.Property<string>("Certifications")
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("CurrentProjectEnd")
+                        .HasMaxLength(60)
+                        .HasColumnType("nvarchar(60)");
+
+                    b.Property<DateTime?>("DateOfBirth")
+                        .HasColumnType("date");
+
+                    b.Property<string>("DoNotSubmit")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<string>("Education")
                         .HasMaxLength(300)
@@ -479,8 +496,24 @@ namespace CollaborateBench.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("GoogleVoice")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
                     b.Property<string>("HotlistSummary")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("IdType")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Keywords")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("LegalName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("LinkedInUrl")
                         .HasMaxLength(300)
@@ -488,6 +521,18 @@ namespace CollaborateBench.Api.Migrations
 
                     b.Property<string>("Location")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("LocationConstraints")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("MarketingTechnology")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Masters")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
 
                     b.Property<bool>("OpenToRelocate")
                         .HasColumnType("bit");
@@ -508,6 +553,10 @@ namespace CollaborateBench.Api.Migrations
                     b.Property<decimal>("PayRate")
                         .HasPrecision(7, 2)
                         .HasColumnType("decimal(7,2)");
+
+                    b.Property<string>("PersonalPhone")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
 
                     b.Property<string>("Phone")
                         .HasColumnType("nvarchar(max)");
@@ -533,6 +582,11 @@ namespace CollaborateBench.Api.Migrations
                         .IsUnicode(false)
                         .HasColumnType("varchar(20)")
                         .HasDefaultValue("Manual");
+
+                    b.Property<string>("SsnLast4")
+                        .HasMaxLength(4)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(4)");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -563,6 +617,64 @@ namespace CollaborateBench.Api.Migrations
                     b.HasIndex("OwnerUserId");
 
                     b.ToTable("Consultants", "bench");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.ConsultantDocument", b =>
+                {
+                    b.Property<int>("ConsultantDocumentId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("ConsultantDocumentId"));
+
+                    b.Property<int>("ConsultantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)");
+
+                    b.Property<DateTime?>("ExpiresOn")
+                        .HasColumnType("date");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("FilePath")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("UploadedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UploadedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("ConsultantDocumentId");
+
+                    b.HasIndex("ConsultantId");
+
+                    b.HasIndex("UploadedByUserId");
+
+                    b.ToTable("ConsultantDocuments", "bench");
                 });
 
             modelBuilder.Entity("CollaborateBench.Api.Data.EmailTemplate", b =>
@@ -830,6 +942,239 @@ namespace CollaborateBench.Api.Migrations
                     b.HasIndex("UserId", "Status", "DueUtc");
 
                     b.ToTable("FollowUpReminders", "bench");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.InboxItem", b =>
+                {
+                    b.Property<int>("InboxItemId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("InboxItemId"));
+
+                    b.Property<string>("AttachmentsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<int?>("ConsultantId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ConversationId")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(3)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(3)")
+                        .HasDefaultValue("In");
+
+                    b.Property<string>("Engine")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(10)");
+
+                    b.Property<string>("FromAddress")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("FromName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("HasAttachments")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("JobJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MatchesJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MessageId")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<bool>("NeedsReply")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Priority")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(10)");
+
+                    b.Property<string>("PriorityReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime>("ReceivedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RequestsJson")
+                        .HasMaxLength(600)
+                        .HasColumnType("nvarchar(600)");
+
+                    b.Property<int?>("RequirementId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SlotsJson")
+                        .HasMaxLength(400)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(400)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(12)");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(600)
+                        .HasColumnType("nvarchar(600)");
+
+                    b.Property<string>("Team")
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)");
+
+                    b.Property<string>("ToAddresses")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("InboxItemId");
+
+                    b.HasIndex("UserId", "ConversationId");
+
+                    b.HasIndex("UserId", "MessageId")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "Status", "ReceivedUtc");
+
+                    b.ToTable("InboxItems", "bench");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.InboxTask", b =>
+                {
+                    b.Property<int>("InboxTaskId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("InboxTaskId"));
+
+                    b.Property<string>("Action")
+                        .HasMaxLength(30)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(30)");
+
+                    b.Property<bool>("Auto")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("ClosedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ConsultantId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DueUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("DurationMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("InboxItemId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("InterviewType")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(12)");
+
+                    b.Property<string>("Location")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<bool>("MockSession")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int?>("ParentTaskId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("RepeatBusinessDays")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("SharedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SlotsJson")
+                        .HasMaxLength(400)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(400)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(12)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("InboxTaskId");
+
+                    b.HasIndex("InboxItemId");
+
+                    b.HasIndex("ParentTaskId");
+
+                    b.HasIndex("UserId", "Status", "DueUtc");
+
+                    b.ToTable("InboxTasks", "bench");
                 });
 
             modelBuilder.Entity("CollaborateBench.Api.Data.JobPosting", b =>
@@ -1254,7 +1599,7 @@ namespace CollaborateBench.Api.Migrations
 
                     b.Property<string>("Stage")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasColumnType("nvarchar(450)");
 
                     b.Property<DateTime>("StageChangedUtc")
                         .HasColumnType("datetime2");
@@ -1265,13 +1610,15 @@ namespace CollaborateBench.Api.Migrations
 
                     b.HasKey("SubmissionId");
 
-                    b.HasIndex("OwnerUserId");
-
                     b.HasIndex("RequirementId");
 
                     b.HasIndex("ConsultantId", "RequirementId")
                         .IsUnique()
                         .HasDatabaseName("UQ_Sub_ConsReq");
+
+                    b.HasIndex("OwnerUserId", "StageChangedUtc");
+
+                    b.HasIndex("Stage", "StageChangedUtc");
 
                     b.ToTable("Submissions", "bench");
                 });
@@ -1335,6 +1682,10 @@ namespace CollaborateBench.Api.Migrations
                         .HasMaxLength(10)
                         .IsUnicode(false)
                         .HasColumnType("varchar(10)");
+
+                    b.Property<string>("FilePath")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
 
                     b.Property<string>("Gaps")
                         .IsRequired()
@@ -1421,6 +1772,10 @@ namespace CollaborateBench.Api.Migrations
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("EmailSignature")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
 
                     b.Property<byte>("FailedLoginCount")
                         .HasColumnType("tinyint");
@@ -1699,6 +2054,25 @@ namespace CollaborateBench.Api.Migrations
                     b.Navigation("Owner");
                 });
 
+            modelBuilder.Entity("CollaborateBench.Api.Data.ConsultantDocument", b =>
+                {
+                    b.HasOne("CollaborateBench.Api.Data.Consultant", "Consultant")
+                        .WithMany()
+                        .HasForeignKey("ConsultantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CollaborateBench.Api.Data.User", "UploadedBy")
+                        .WithMany()
+                        .HasForeignKey("UploadedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Consultant");
+
+                    b.Navigation("UploadedBy");
+                });
+
             modelBuilder.Entity("CollaborateBench.Api.Data.EmailTemplate", b =>
                 {
                     b.HasOne("CollaborateBench.Api.Data.User", "Owner")
@@ -1726,6 +2100,27 @@ namespace CollaborateBench.Api.Migrations
                         .IsRequired();
 
                     b.Navigation("VendorEmail");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.InboxItem", b =>
+                {
+                    b.HasOne("CollaborateBench.Api.Data.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("CollaborateBench.Api.Data.InboxTask", b =>
+                {
+                    b.HasOne("CollaborateBench.Api.Data.InboxItem", "InboxItem")
+                        .WithMany()
+                        .HasForeignKey("InboxItemId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("InboxItem");
                 });
 
             modelBuilder.Entity("CollaborateBench.Api.Data.MailConnection", b =>

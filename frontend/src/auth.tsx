@@ -27,6 +27,7 @@ export function scopeOptionsFor(u: User | null): [Scope, string][] {
   if (!u) return [['mine', 'My records']];
   if (u.role === 'Admin') return [['all', 'All data']];
   if (u.role === 'Delivery Manager') return [['all', 'All teams'], ['team', 'My org'], ['mine', 'My records']];
+  if (u.role === 'Manager') return [['all', 'Whole bench'], ['team', 'My org'], ['mine', 'My records']];
   if (u.role === 'Team Lead') return [['team', `My team${u.team ? ' · ' + u.team : ''}`], ['mine', 'My records']];
   return [['mine', 'My records']];
 }
