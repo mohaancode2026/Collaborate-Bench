@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, Consultant, Requirement, Submission, TeamMember, VISAS } from './api';
+import { api, Assignee, Consultant, Requirement, Submission, TeamMember, VISAS } from './api';
 import { useAuth } from './auth';
 import { Alert, Avatar, Field, FieldErrors, Modal, Spinner, useErrorHandler, useToast } from './ui';
 
@@ -35,9 +35,15 @@ const AVAILABILITY = ['Immediately', '1 week notice', '2 weeks notice', '30 days
 /** Consultant fields with inline validation messages coming from the API. */
 export function ConsultantForm({ draft, set, errors }: { draft: ConsultantDraft; set: (d: ConsultantDraft) => void; errors: FieldErrors }) {
   const { can } = useAuth();
-  const [owners, setOwners] = useState<TeamMember[]>([]);
+  const [owners, setOwners] = useState<{ id: number; name: string; role: string }[]>([]);
   const canReassign = can('bench.reassign');
-  useEffect(() => { if (canReassign) api<TeamMember[]>('/users').then(u => setOwners(u.filter(x => x.active && x.role !== 'Admin'))).catch(() => {}); }, [canReassign]);
+  const seesTeam = can('team.view');
+  // Team Leads don't have Team & Access, so they pick from the people they can assign to (their own recruiters).
+  useEffect(() => {
+    if (!canReassign) return;
+    if (seesTeam) api<TeamMember[]>('/users').then(u => setOwners(u.filter(x => x.active && x.role !== 'Admin'))).catch(() => {});
+    else api<Assignee[]>('/consultants/assignees').then(setOwners).catch(() => {});
+  }, [canReassign, seesTeam]);
   const f = <K extends keyof ConsultantDraft>(k: K) => (v: ConsultantDraft[K]) => set({ ...draft, [k]: v });
   const notify = useToast();
   const onError = useErrorHandler();

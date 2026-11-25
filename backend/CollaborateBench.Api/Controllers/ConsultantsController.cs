@@ -243,12 +243,16 @@ public sealed class ConsultantsController(AppDbContext db, DataService data, ICu
         };
     }
 
+    /// <summary>A Technical Coordinator (Manager) sends the hotlist to Team Leads only; Admin and Director of Sales can send it to anyone.</summary>
+    private bool HotlistLeadsOnly => me.Role == "Manager";
+
     /// <summary>People the hotlist can go to inside the company: active Team Leads first (they assign the consultants), then the rest.</summary>
     [HttpGet("hotlist/recipients"), RequirePerm("hotlist.send")]
     public async Task<object> HotlistRecipients(CancellationToken ct)
     {
         var meId = me.RequiredId;
-        var users = await db.Users.AsNoTracking().Where(u => u.IsActive && u.UserId != meId)
+        var leadsOnly = HotlistLeadsOnly;
+        var users = await db.Users.AsNoTracking().Where(u => u.IsActive && u.UserId != meId && (!leadsOnly || u.Role.Name == "Team Lead"))
             .Select(u => new { u.UserId, u.FullName, u.Email, Role = u.Role.Name, Team = u.Team != null ? u.Team.Name : null }).ToListAsync(ct);
         return users.OrderBy(u => u.Role == "Team Lead" ? 0 : 1).ThenBy(u => u.FullName)
             .Select(u => new { id = u.UserId, name = u.FullName, email = u.Email, role = u.Role, team = u.Team });
@@ -273,7 +277,11 @@ public sealed class ConsultantsController(AppDbContext db, DataService data, ICu
         var all = await data.HotlistConsultantsAsync(ct);
         var picked = all.Where(c => cids.Contains(c.Id)).ToList();
         if (picked.Count == 0) throw AppException.Bad("VALIDATION", "Nobody to send", "Those consultants aren't available on the bench any more. Reload and pick again.");
-        var to = await db.Users.AsNoTracking().Where(u => uids.Contains(u.UserId) && u.IsActive).Select(u => u.Email).ToListAsync(ct);
+        var recipients = await db.Users.AsNoTracking().Where(u => uids.Contains(u.UserId) && u.IsActive)
+            .Select(u => new { u.Email, Role = u.Role.Name }).ToListAsync(ct);
+        if (HotlistLeadsOnly && recipients.Any(r => r.Role != "Team Lead"))
+            throw AppException.Bad("VALIDATION", "Team Leads only", "As a Technical Coordinator you send the hotlist to Team Leads only. Remove the others and try again.");
+        var to = recipients.Select(r => r.Email).ToList();
         if (to.Count == 0) throw AppException.Bad("VALIDATION", "Nobody to send to", "Pick at least one active person.");
 
         // Latest resume of each consultant, packed into emails of at most ~2.8 MB (Graph's sendMail limit is 4 MB after base64).

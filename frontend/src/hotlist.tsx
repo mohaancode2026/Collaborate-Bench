@@ -27,7 +27,9 @@ function hotlistText(list: HotlistConsultant[]) {
  * from your Outlook. Also: copy it, or open it in the email window for vendors.
  */
 export function HotlistDialog({ onClose }: { onClose: () => void }) {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
+  // A Technical Coordinator sends the hotlist to Team Leads only (the server enforces it too): no vendor email, no one else.
+  const leadsOnly = user?.role === 'Manager';
   const onError = useErrorHandler();
   const notify = useToast();
   const [h, setH] = useState<Hotlist | null>(null);
@@ -72,7 +74,7 @@ export function HotlistDialog({ onClose }: { onClose: () => void }) {
     <Modal wide title={h ? `Hotlist · ${picked.size} of ${h.count} consultants` : 'Hotlist'} onClose={onClose}
       footer={<>
         <button className="btn btn-outline" style={{ marginRight: 'auto' }} disabled={!chosen.length} onClick={() => copyText(`Subject: ${hotlistText(chosen).subject}\n\n${hotlistText(chosen).body}`, notify)}>Copy</button>
-        {can('mail.view') && <button className="btn btn-outline" disabled={!chosen.length} onClick={() => setVendorMail(hotlistText(chosen))}>Email to vendors…</button>}
+        {can('mail.view') && !leadsOnly && <button className="btn btn-outline" disabled={!chosen.length} onClick={() => setVendorMail(hotlistText(chosen))}>Email to vendors…</button>}
         <button className="btn btn-primary" onClick={send} disabled={busy || !picked.size || !to.size}>
           {busy ? <><Spinner /> Sending…</> : `Send to ${to.size} ${to.size === 1 ? 'person' : 'people'}${attach ? ' with resumes' : ''}`}</button></>}>
       {!h ? <Empty><Spinner dark /> Loading the bench…</Empty> : (
@@ -104,7 +106,7 @@ export function HotlistDialog({ onClose }: { onClose: () => void }) {
               <div className="hot-people">
                 {leads.length === 0 && <p className="muted" style={{ fontSize: 13 }}>No active Team Leads.</p>}
                 {leads.map(p => <Person key={p.id} p={p} on={to.has(p.id)} toggle={() => toggle(to, p.id, setTo)} />)}
-                {others.length > 0 && (showAllPeople
+                {!leadsOnly && others.length > 0 && (showAllPeople
                   ? others.map(p => <Person key={p.id} p={p} on={to.has(p.id)} toggle={() => toggle(to, p.id, setTo)} />)
                   : <button className="linkish" style={{ marginTop: 6 }} onClick={() => setShowAllPeople(true)}>+ Add someone else ({others.length})</button>)}
               </div>

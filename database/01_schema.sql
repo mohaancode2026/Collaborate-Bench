@@ -43,11 +43,11 @@ CREATE TABLE sec.RolePermissions (
     CONSTRAINT PK_RolePermissions PRIMARY KEY (RoleId, PermissionCode)
 );
 INSERT sec.RolePermissions SELECT 1, PermissionCode FROM sec.Permissions;
-INSERT sec.RolePermissions SELECT 2, PermissionCode FROM sec.Permissions;
-INSERT sec.RolePermissions SELECT 3, PermissionCode FROM sec.Permissions WHERE PermissionCode <> 'team.manage';
+INSERT sec.RolePermissions SELECT 2, PermissionCode FROM sec.Permissions WHERE PermissionCode NOT IN ('parser.use','bench.create');
+INSERT sec.RolePermissions SELECT 3, PermissionCode FROM sec.Permissions WHERE PermissionCode NOT IN ('team.manage','team.view','parser.use','bench.create');
 INSERT sec.RolePermissions SELECT 4, PermissionCode FROM sec.Permissions WHERE PermissionCode IN
- ('dash.view','bench.view','bench.create','bench.edit','parser.use','jobs.view','jobs.create','board.view',
-  'match.view','pipeline.view','sub.create','sub.move','onboard.view','team.view','ai.copilot');
+ ('dash.view','bench.view','bench.create','bench.edit','jobs.view','jobs.create','board.view',
+  'match.view','pipeline.view','sub.create','sub.move','onboard.view','ai.copilot');
 
 /* ---------- 2. Teams, users, hierarchy ---------- */
 CREATE TABLE sec.Teams (

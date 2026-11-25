@@ -165,7 +165,7 @@ function UserDialog({ user, onClose, onSaved }: { user: TeamMember | null; onClo
   );
   return (
     <Modal title={user ? `Manage ${user.name}` : 'Add user'} onClose={onClose}
-      footer={<>{user && <><button className="btn btn-outline" style={{ marginRight: 'auto' }} onClick={() => action('reset-password', 'Password reset')}>Reset password</button>
+      footer={<>{user && <><span style={{ marginRight: 'auto' }}>{me?.role === 'Admin' && <button className="btn btn-outline" onClick={() => action('reset-password', 'Password reset')}>Reset password</button>}</span>
         {user.locked && <button className="btn btn-outline" onClick={() => action('unlock', 'Account unlocked')}>Unlock</button>}</>}
         <button className="btn btn-outline" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={save} disabled={busy}>{busy ? <Spinner /> : user ? 'Save changes' : 'Create user'}</button></>}>
       <div className="row2"><Field label="Full name *" error={errors.name}><input className="inp" value={d.name} onChange={e => setD({ ...d, name: e.target.value })} /></Field>

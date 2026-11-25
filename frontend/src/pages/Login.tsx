@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { api, ApiError, User } from '../api';
 import { useAuth } from '../auth';
+import { NAV } from '../nav';
 import { Brand, Icon } from '../Layout';
 import { Alert, Avatar, Field, FieldErrors, Spinner, useToast } from '../ui';
 
@@ -49,7 +50,7 @@ export default function Login() {
         if (res.newAccount) notify('success', `Welcome, ${u.name.split(' ')[0]}`, `Your account was created with ${u.role} access. Ask your admin to add you to a team.${res.mailConnected ? '' : " Connect Outlook from Vendor Mail to track vendor emails."}`);
         else if (res.mailConnected) notify('success', `Welcome back, ${u.name.split(' ')[0]}`, 'Signed in with Microsoft. Your vendor emails are being tracked.');
         else notify('warning', `Welcome back, ${u.name.split(' ')[0]}`, "Signed in with Microsoft, but Outlook couldn't be connected, so vendor emails aren't tracked yet. Connect Outlook from Vendor Mail.");
-        nav(takeReturnPath() ?? '/dashboard', { replace: true });
+        nav(landingFor(u, takeReturnPath()), { replace: true });
       })
       .catch(e => setAlert(e instanceof ApiError ? { type: 'error', title: e.title, detail: e.detail } : MS_ERRORS.failed))
       .finally(() => setMsBusy(false));
@@ -81,7 +82,7 @@ export default function Login() {
       setPassword('');
       if (u.mustChangePassword) { notify('info', 'Choose a new password', 'Your admin gave you a temporary password. Set your own to continue.'); return; }
       notify('success', `Welcome back, ${u.name.split(' ')[0]}`, `Signed in as ${u.role}${u.team ? ' · ' + u.team : ''}.`);
-      nav(loc.state?.from ?? '/dashboard', { replace: true });
+      nav(landingFor(u, loc.state?.from), { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.errors) setErrors(err.errors);
@@ -164,6 +165,17 @@ const POINTS: [string, string, string][] = [
 ];
 
 const RETURN_KEY = 'cbs.msReturn';
+
+/**
+ * Where to go after signing in: the remembered page if this user's role can open it, else the dashboard.
+ * The remembered page may be the previous person's (e.g. an Admin on Team & Access signs out, an Executive signs in).
+ */
+function landingFor(u: User, path: string | null | undefined): string {
+  if (!path) return '/dashboard';
+  const base = '/' + (path.split(/[?#]/)[0].split('/')[1] ?? '');
+  const perm = base === '/bench' ? 'bench.view' : NAV.find(n => n.path === base)?.perm;
+  return perm && u.permissions.includes(perm) ? path : '/dashboard';
+}
 
 /** The in-app path saved before going to Microsoft, used once. Only same-app paths ("/x", not "//host") are accepted. */
 function takeReturnPath(): string | null {

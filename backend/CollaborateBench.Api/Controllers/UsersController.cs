@@ -161,12 +161,12 @@ public sealed class UsersController(AppDbContext db, DataService data, ICurrentU
         return NoContent();
     }
 
-    /// <summary>Issues a new temporary password (returned once) and unlocks the account. Only an Admin can reset an Admin.</summary>
+    /// <summary>Issues a new temporary password (returned once) and unlocks the account. Admins only (not Directors of Sales).</summary>
     [HttpPost("{id:int}/reset-password"), RequirePerm("team.manage")]
     public async Task<object> ResetPassword(int id)
     {
+        if (me.Role != "Admin") throw AppException.Forbidden("Only an Admin can reset passwords.");
         var user = await db.Users.Include(u => u.Role).FirstOrDefaultAsync(u => u.UserId == id) ?? throw AppException.NotFound("User");
-        if (user.Role.Name == "Admin" && me.Role != "Admin") throw AppException.Forbidden("Only an Admin can reset another Admin's password.");
         var temp = TempPassword();
         user.PasswordHash = Hasher.HashPassword(user.Email, temp);
         user.MustChangePassword = true;
