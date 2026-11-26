@@ -169,18 +169,54 @@ public static class InboxWorkflow
         return bench;
     }
 
-    /// <summary>Scores a job against the bench: the top 5 at or above <paramref name="minScore"/>, strong ones flagged "resume ready".</summary>
+    /// <summary>"Green Card", "US Citizen", "H-1B", "usc" … → the app's codes GC / USC / H1B; any other value as it is ("GC-EAD", "OPT").</summary>
+    public static string NormVisa(string? v)
+    {
+        var raw = (v ?? "").Trim();
+        return Regex.Replace(raw.ToUpperInvariant(), @"[\s.\-]", "") switch
+        {
+            "GREENCARD" or "GC" or "PERMANENTRESIDENT" or "LPR" => "GC",
+            "USC" or "USCITIZEN" or "CITIZEN" or "USCITIZENSHIP" or "US" => "USC",
+            "H1" or "H1B" => "H1B",
+            _ => raw,
+        };
+    }
+
+    /// <summary>A job that only takes green-card holders or US citizens (every visa it names is GC or USC).</summary>
+    public static bool GcUscOnly(List<string> visas) =>
+        visas.Count > 0 && visas.All(v => NormVisa(v) is "GC" or "USC");
+
+    /// <summary>
+    /// Ranks the profiles that fit a job (the executive's own assigned profiles: the caller passes that bench). Order:
+    /// visa (H-1B first, then other accepted visas, then unknown, then not accepted), skill match %, years of experience
+    /// (more first), rate (lower first, unknown last), location fit. A GC/USC-only job shows only GC and USC profiles.
+    /// Up to 10, at or above <paramref name="minScore"/> overall; strong ones flagged "resume ready".
+    /// </summary>
     public static List<InboxMatch> Match(InboxJob job, List<ConsultantDto> bench, int minScore, int readyScore)
     {
         var req = new RequirementDto
         {
             Title = job.Title, Client = job.Client ?? "", Location = job.Location ?? "", Mode = job.Mode, Type = job.Type,
-            Rate = job.Rate, Skills = job.Skills, Visas = job.Visas.Count > 0 ? job.Visas : ["Any"],
+            Rate = job.Rate, Skills = job.Skills, Visas = job.Visas.Count > 0 ? job.Visas.Select(NormVisa).Distinct().ToList() : ["Any"],
         };
-        return bench.Select(c => (c, m: Matching.Score(c, req)))
-            .Where(x => x.m.Score >= minScore).OrderByDescending(x => x.m.Score).Take(5)
+        var gcUscOnly = GcUscOnly(job.Visas);
+        int VisaRank(ConsultantDto c, MatchResult m) =>
+            string.IsNullOrWhiteSpace(c.Visa) ? 2 : !m.VisaOk ? 3 : NormVisa(c.Visa) == "H1B" ? 0 : 1;
+        return bench
+            .Where(c => !gcUscOnly || NormVisa(c.Visa) is "GC" or "USC")
+            .Select(c => (c, m: Matching.Score(c, req), loc: Matching.LocationFit(c, req)))
+            .Select(x => (x.c, x.m, x.loc, pct: job.Skills.Count == 0 ? 0 : (int)Math.Round(100.0 * x.m.Hit.Count / job.Skills.Count)))
+            .Where(x => x.m.Score >= minScore)
+            .OrderBy(x => VisaRank(x.c, x.m))
+            .ThenByDescending(x => x.pct)
+            .ThenByDescending(x => x.c.Exp)
+            .ThenBy(x => x.c.Rate > 0 ? x.c.Rate : decimal.MaxValue)
+            .ThenByDescending(x => x.loc)
+            .Take(10)
             .Select(x => new InboxMatch(x.c.Id, x.c.Name, x.c.Title, x.m.Score, x.m.Why, x.c.Exp,
-                x.m.Score >= readyScore && x.m.VisaOk && (job.MinYears is null || x.c.Exp >= job.MinYears)))
+                x.m.Score >= readyScore && x.m.VisaOk && (job.MinYears is null || x.c.Exp >= job.MinYears),
+                string.IsNullOrWhiteSpace(x.c.Visa) ? null : x.c.Visa, x.pct, x.c.Rate, string.IsNullOrWhiteSpace(x.c.Location) ? null : x.c.Location,
+                x.m.Hit, x.m.Miss))
             .ToList();
     }
 

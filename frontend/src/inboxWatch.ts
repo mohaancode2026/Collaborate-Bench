@@ -18,12 +18,33 @@ export function saveAlertPrefs(p: InboxAlertPrefs) {
   window.dispatchEvent(new Event('cbs:inbox'));
 }
 
-/** Monday–Friday between the start and end hour, in the browser's time zone. */
-export function inWorkday(p: InboxAlertPrefs, d = new Date()) {
-  const day = d.getDay();
-  const h = d.getHours() + d.getMinutes() / 60;
-  return day >= 1 && day <= 5 && h >= p.startHour && h < p.endHour;
+/** The team works the US shift, so alert hours are US Eastern time (New York, daylight saving included) whatever the computer's zone. */
+export const SHIFT_TZ = 'America/New_York';
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** Weekday (0 = Sunday), hour as a fraction, and a label like "Mon 10:42 AM ET", for US Eastern time. */
+export function easternNow(d = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: SHIFT_TZ, weekday: 'short', hour: 'numeric', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(d).map(x => [x.type, x.value]));
+  const hour = Number(parts.hour) % 24, minute = Number(parts.minute);
+  const label = `${parts.weekday} ${d.toLocaleTimeString('en-US', { timeZone: SHIFT_TZ, hour: 'numeric', minute: '2-digit' })} ET`;
+  return { day: DAYS.indexOf(parts.weekday), h: hour + minute / 60, label };
 }
+
+/**
+ * Inside the shift: Monday–Friday (US Eastern) between the start and end hour, US Eastern time. An end before the start means the
+ * shift runs past midnight (e.g. 20:00–4:00); its after-midnight part belongs to the weekday it started on.
+ */
+export function inWorkday(p: InboxAlertPrefs, d = new Date()) {
+  const { day, h } = easternNow(d);
+  const weekday = (x: number) => x >= 1 && x <= 5;
+  if (p.startHour < p.endHour) return weekday(day) && h >= p.startHour && h < p.endHour;
+  if (h >= p.startHour) return weekday(day);
+  return h < p.endHour && weekday((day + 6) % 7);
+}
+
+/** "9:00 AM" style label for an hour of the day. */
+export const hourLabel = (h: number) => `${((h + 11) % 12) + 1}:00 ${h % 24 < 12 ? 'AM' : 'PM'}`;
 
 /** A short two-tone chime (no audio file needed). Browsers play it only after the user has clicked somewhere on the page. */
 export function playChime() {
@@ -44,9 +65,27 @@ export function playChime() {
   } catch { /* audio blocked */ }
 }
 
+/** How often an open, visible tab asks the server to read the user's Outlook. The server skips it if it read it in the last 10 s. */
+const MAIL_REFRESH_MS = 20_000;
+let refreshing: Promise<void> | null = null;
+
 /**
- * Watches the AI Inbox (every minute, and on 'cbs:inbox'): the sidebar badge and, during the workday, a desktop
- * notification + chime + toast for each new high-priority email (FRD-003). Outside the workday the badge still updates.
+ * Asks the server to read the user's Outlook now (unless it just did), then tells every open page to reload ('cbs:inbox').
+ * Calls made while one is running share it.
+ */
+export function refreshMail(): Promise<void> {
+  // Reload either way: when the server skipped the read, its own scheduled sync may just have brought new mail.
+  refreshing ??= api<{ synced: boolean }>('/inbox/refresh', { method: 'POST' })
+    .then(() => { window.dispatchEvent(new Event('cbs:inbox')); })
+    .catch(() => { /* offline or Outlook not connected: the scheduled server sync still runs */ })
+    .finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+/**
+ * Watches the AI Inbox: every 20 seconds while the tab is visible (and when it comes back into view) it has the server read
+ * Outlook, then updates the sidebar badge and, during the workday, shows a desktop notification + chime + toast for each new
+ * high-priority email (FRD-003). Outside the workday the badge still updates.
  */
 export function useInboxWatch() {
   const { user, can } = useAuth();
@@ -84,9 +123,18 @@ export function useInboxWatch() {
       .then(s => { if (!alive) return; setSummary(s); alert(s); first.current = false; })
       .catch(() => {});
     load();
-    const t = setInterval(load, 60_000);
+    // New mail: read Outlook now; when something was read, 'cbs:inbox' fires and reloads the badge and any open mail page.
+    const tick = () => { if (document.visibilityState === 'visible') refreshMail(); };
+    tick();
+    const t = setInterval(tick, MAIL_REFRESH_MS);
+    // Hidden tabs don't refresh; the badge still catches up every minute from the server's own 30-second sync.
+    const slow = setInterval(() => { if (document.visibilityState !== 'visible') load(); }, 60_000);
     window.addEventListener('cbs:inbox', load);
-    return () => { alive = false; clearInterval(t); window.removeEventListener('cbs:inbox', load); };
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      alive = false; clearInterval(t); clearInterval(slow);
+      window.removeEventListener('cbs:inbox', load); document.removeEventListener('visibilitychange', tick);
+    };
   }, [user, can, alert]);
   return summary;
 }

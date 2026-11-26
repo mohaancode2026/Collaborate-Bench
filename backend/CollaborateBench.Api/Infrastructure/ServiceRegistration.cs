@@ -100,6 +100,10 @@ public static class ServiceRegistration
         services.AddScoped<MicrosoftAuth>();
         services.AddScoped<MailSender>();
         services.AddScoped<VendorDiscovery>();
+        // Adds the clear vendors found in the mailboxes to the directory by itself (section "Vendors", AutoAdd).
+        services.Configure<VendorAutoAddOptions>(cfg.GetSection("Vendors"));
+        services.AddSingleton<VendorAutoAdd>();
+        services.AddHostedService(sp => sp.GetRequiredService<VendorAutoAdd>());
         // AI Inbox: triages each user's Outlook Inbox during the mail sync.
         services.Configure<InboxOptions>(cfg.GetSection("Inbox"));
         services.AddScoped<InboxTriage>();

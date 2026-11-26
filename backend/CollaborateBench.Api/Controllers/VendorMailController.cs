@@ -300,6 +300,16 @@ public sealed class VendorMailController(AppDbContext db, DataService data, ICur
         return r;
     }
 
+    /// <summary>Runs the automatic vendor scan now (it also runs by itself every few hours) and returns the vendors it added.</summary>
+    [HttpPost("vendors/auto-add"), RequirePerm("vendors.manage"), EnableRateLimiting("ai")]
+    public async Task<object> AutoAddNow([FromServices] VendorAutoAdd auto, CancellationToken ct)
+    {
+        if (!ms.Options.Configured)
+            throw AppException.Conflict("MICROSOFT_NOT_CONFIGURED", "Outlook isn't set up", "Ask your admin to set up the Microsoft app registration first.");
+        var added = await auto.RunAsync(ct);
+        return new { added = added.Count, vendors = added };
+    }
+
     /// <summary>Adds several vendors at once (e.g. picked from a mailbox scan). Each one is validated on its own, so one bad entry
     /// doesn't stop the rest; mailboxes are re-checked once at the end.</summary>
     [HttpPost("vendors/batch"), RequirePerm("vendors.manage")]

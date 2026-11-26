@@ -284,13 +284,11 @@ function SettingsDialog({ settings, onClose, onSaved }: { settings: AutopilotSet
       </div>
       <div className="row2">
         <Field label="Prepare per run (AI calls)" error={errors.maxPreparePerRun}><input className="inp" type="number" value={s.maxPreparePerRun} onChange={num('maxPreparePerRun')} /></Field>
-        <Field label="Max auto follow-ups / thread" error={errors.maxAutoFollowUps}><input className="inp" type="number" value={s.maxAutoFollowUps} onChange={num('maxAutoFollowUps')} /></Field>
       </div>
       <label className="check"><input type="checkbox" checked={s.includeExternalJobs} onChange={e => setS({ ...s, includeExternalJobs: e.target.checked })} /><span>Include saved external jobs (LinkedIn, Indeed…)</span></label>
-      <label className="check"><input type="checkbox" checked={s.autoFollowUp} onChange={e => setS({ ...s, autoFollowUp: e.target.checked })} /><span>Follow up with vendors automatically when there's no reply in 48 hours</span></label>
       <label className="check"><input type="checkbox" checked={s.classifyReplies} onChange={e => setS({ ...s, classifyReplies: e.target.checked })} /><span>Read vendor replies and suggest the next step</span></label>
       <label className="check"><input type="checkbox" checked={s.emailNotifications} onChange={e => setS({ ...s, emailNotifications: e.target.checked })} /><span>Email recruiters about Autopilot events (each person chooses which under Email alerts)</span></label>
-      <p className="muted mt" style={{ fontSize: 12.5 }}>Nothing reaches a vendor until a recruiter approves it and the consultant e-signs the RTR. Follow-ups go from the recruiter's own Outlook.</p>
+      <p className="muted mt" style={{ fontSize: 12.5 }}>Nothing reaches a vendor until a recruiter approves it and the consultant e-signs the RTR. Follow-ups are never sent automatically: when one is due, the executive gets a reminder with a ready draft to approve and send (or copy into Outlook).</p>
     </Modal>
   );
 }
@@ -314,7 +312,6 @@ function AlertsDialog({ onClose }: { onClose: () => void }) {
     ['vendorReplies', 'Vendor replies', 'Interview requests, rejections, closed positions, info and rate questions'],
     ['rtrUpdates', 'RTR and submissions', 'Submitted after the consultant signed, RTR declined or expired'],
     ['problems', 'Problems', "A consultant needs a resume, or a submission couldn't be sent"],
-    ['followUps', 'Follow-ups sent for me', 'Each automatic follow-up the Autopilot sent from my Outlook'],
   ];
   return (
     <Modal title="Autopilot email alerts" onClose={onClose}

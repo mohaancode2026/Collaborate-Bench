@@ -58,9 +58,7 @@ public static class Matching
         var visaOk = visaUnknown || visas.Contains("Any", StringComparer.OrdinalIgnoreCase) || visas.Contains(c.Visa, StringComparer.OrdinalIgnoreCase)
                      || (c.Visa is "USC" or "GC" && visas.Any(v => v is "USC" or "GC"));
 
-        var loc = j.Mode == "Remote" || j.Location == "Remote" ? 1
-            : State(c.Location) is { } s && s == State(j.Location) ? 1
-            : c.Relocate ? 0.75 : 0.35;
+        var loc = LocationFit(c, j);
 
         var total = (skill * 0.6 + rate * 0.18 + (visaOk ? 1 : 0) * 0.12 + loc * 0.10) * 100 * (visaOk ? 1 : 0.6);
         var why = new List<string> { hit.Count > 0 ? $"Matches {hit.Count}/{j.Skills.Count} skills ({string.Join(", ", hit)})" : "No direct skill overlap" };
@@ -72,6 +70,12 @@ public static class Matching
         return new MatchResult(c.Id, c.Name, c.Title, c.Visa, c.Rate, c.OwnerName, j.Id, j.Title, j.Client, j.Vendor, j.Type, j.Rate,
             (int)Math.Min(100, Math.Round(total)), hit, miss, string.Join(" · ", why), visaOk, submittedStage);
     }
+
+    /// <summary>1 = remote job or same state, 0.75 = open to relocate, 0.35 = elsewhere.</summary>
+    public static double LocationFit(ConsultantDto c, RequirementDto j) =>
+        j.Mode == "Remote" || j.Location == "Remote" ? 1
+        : State(c.Location) is { } s && s == State(j.Location) ? 1
+        : c.Relocate ? 0.75 : 0.35;
 
     public static decimal SuggestRate(decimal pay, decimal bill)
     {

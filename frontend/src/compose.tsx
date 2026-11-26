@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AiText, api, Consultant, EmailTemplate, MailConnection, postForm, RenderResult, Requirement, VendorEmail } from './api';
+import { AiText, api, ApiError, Consultant, EmailTemplate, MailConnection, postForm, RenderResult, Requirement, VendorEmail } from './api';
 import { useAuth } from './auth';
 import { Alert, copyText, Field, FieldErrors, Modal, Spinner, useErrorHandler, useToast } from './ui';
 
@@ -197,7 +197,13 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
       notify('success', 'Email sent', `Sent from your Outlook${r.tracked ? '. It will show in Vendor Emails in a moment.' : '.'}`);
       if (!r.tracked) notify('info', 'Not a listed vendor', "None of the recipients are in the vendor list, so this email won't be tracked in Vendor Emails.");
       onSent?.(); onClose();
-    } catch (e) { onError(e, setErrors); }
+    } catch (e) {
+      // Outlook sent it but didn't confirm in time, or the same email just went: treat it as sent, so nobody sends it twice.
+      if (e instanceof ApiError && (e.code === 'MAIL_UNCONFIRMED' || e.code === 'MAIL_DUPLICATE')) {
+        notify('warning', e.title, e.detail);
+        onSent?.(); onClose();
+      } else onError(e, setErrors);
+    }
     finally { setBusy(false); }
   };
 
@@ -212,7 +218,8 @@ export function ComposeDialog({ initial, replyTo, onClose, onSent, templateCateg
         <button className="btn btn-outline" style={conn && !ready && to ? undefined : { marginRight: 'auto' }}
           onClick={() => copyText(`To: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${subject}\n\n${body}`, notify)}>Copy for Outlook</button>
         <button className="btn btn-outline" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={send} disabled={busy || !ready || total > MAX_BYTES}>{busy ? <Spinner /> : 'Send from Outlook'}</button></>}>
+        <button className="btn btn-primary" onClick={send} disabled={busy || !ready || total > MAX_BYTES}
+          title={busy ? 'Outlook can take up to 30 seconds to confirm. Please wait; don’t send it again.' : undefined}>{busy ? <><Spinner /> Sending…</> : 'Send from Outlook'}</button></>}>
       {!conn ? <div className="empty"><Spinner dark /> Loading…</div> : <>
         {!conn.configured && <Alert type="info" title="Sending from the portal isn't set up">Your admin needs to connect the app to Microsoft 365 first. You can still use your mail app.</Alert>}
         {conn.configured && !conn.connected && <Alert type="info" title="Connect Outlook to send from the portal">

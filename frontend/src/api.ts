@@ -191,7 +191,13 @@ export interface RecruiterMailStat { userId: number; name: string; sent: number;
 export interface MailSummary { days: number; sent: number; received: number; vendorsContacted: number; awaitingReply: number; byVendor: VendorInfo[]; byRecruiter: RecruiterMailStat[]; }
 // ---------- AI Inbox ----------
 export interface InboxJob { title: string; client?: string | null; location?: string | null; mode: string; type: string; rate: number; skills: string[]; minYears?: number | null; visas: string[]; }
-export interface InboxMatch { consultantId: number; name: string; title: string; score: number; why: string; exp: number; resumeReady: boolean; }
+/** A ranked profile for a job email. visa…missing are empty on matches saved before ranking existed (until "Fetch matching profiles"). */
+export interface InboxMatch {
+  consultantId: number; name: string; title: string; score: number; why: string; exp: number; resumeReady: boolean;
+  visa?: string | null; skillPct?: number; rate?: number; location?: string | null; matched?: string[] | null; missing?: string[] | null;
+}
+/** An earlier send of the same consultant to the same vendor or client. */
+export interface AlreadySent { whenUtc: string; kind: string; text: string; by?: string | null; }
 export interface InboxItem {
   id: number; receivedUtc: string; fromAddress: string; fromName?: string | null; subject: string; summary: string;
   category: 'JobListing' | 'Interview' | 'FollowUp' | 'Rate' | 'Rejection' | 'Other' | 'Noise' | 'Sent'; priority: 'High' | 'Medium' | 'Low';

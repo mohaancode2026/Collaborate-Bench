@@ -69,7 +69,6 @@ public sealed partial class AutopilotService(AppDbContext db, ResumeTailor tailo
         {
             await Step("found", () => DiscoverAsync(s, ct));
             await Step("prepared", () => PrepareAsync(s, ct));
-            if (s.AutoFollowUp) await Step("followed up", () => FollowUpsAsync(s, ct));
             if (s.ClassifyReplies) await Step("replies read", () => ClassifyRepliesAsync(ct));
         }
         if (s.EmailNotifications) await Step("emailed", () => SendNotificationsAsync(ct));
@@ -439,39 +438,9 @@ public sealed partial class AutopilotService(AppDbContext db, ResumeTailor tailo
         return expired.Count;
     }
 
-    // ================= 6. Automatic follow-ups =================
-
-    private async Task<int> FollowUpsAsync(AutopilotSettings s, CancellationToken ct)
-    {
-        var now = DateTime.UtcNow;
-        var due = await db.FollowUpReminders.Where(r => r.Status == "Open" && r.Auto && r.DueUtc <= now).OrderBy(r => r.DueUtc).Take(20).ToListAsync(ct);
-        var sent = 0;
-        foreach (var r in due)
-        {
-            var email = await db.VendorEmails.AsNoTracking().Include(e => e.User).FirstOrDefaultAsync(e => e.VendorEmailId == r.VendorEmailId, ct);
-            if (email is null || email.Direction != "Out") continue;
-            // Stop after MaxAutoFollowUps unanswered follow-ups in this thread: a person takes over from there.
-            var thread = await db.VendorEmails.AsNoTracking().Where(e => e.UserId == email.UserId && e.ConversationId == email.ConversationId && email.ConversationId != null)
-                .Select(e => e.Direction).ToListAsync(ct);
-            if (thread.Count(d => d == "Out") > s.MaxAutoFollowUps || thread.Contains("In")) continue;
-            var consultant = email.ConsultantId is int cid ? await db.Consultants.IgnoreQueryFilters().Where(x => x.ConsultantId == cid).Select(x => x.FullName).FirstOrDefaultAsync(ct) : null;
-            var contact = await db.VendorEmails.AsNoTracking().Where(e => e.FromAddress == email.ToAddresses && e.FromName != null).Select(e => e.FromName).FirstOrDefaultAsync(ct);
-            var first = contact?.Split(' ', ',')[0] is { Length: > 1 } f ? char.ToUpperInvariant(f[0]) + f[1..] : "there";
-            var body = $"Hi {first},\n\nFollowing up on {(consultant != null ? $"{consultant}'s profile" : "the profile")} I sent below. Is there any update or feedback from the client?\n\nHappy to set up a quick call if that helps.\n\nThanks,\n{email.User.FullName}";
-            try
-            {
-                await mail.SendAsync(email.UserId, new OutgoingMail(SplitEmails(email.ToAddresses), [], "", body, [], email.MessageId), ct);
-                r.Status = "Done"; r.ClosedUtc = now; r.Note = Cut($"{r.Note} Followed up automatically.".Trim(), 500);
-                sent++;
-                Notify(email.UserId, "followup", $"Followed up with {email.ToAddresses} on \"{email.Subject}\".", "/vendor-mail", null);
-                await audit.LogAsync("AUTOPILOT_FOLLOWUP", $"Autopilot followed up on \"{email.Subject}\"", userId: email.UserId);
-            }
-            // Outlook not connected / no send permission / original deleted: leave the reminder for the recruiter.
-            catch (AppException ex) { log.LogInformation("Autopilot follow-up skipped for reminder {Id}: {Reason}", r.ReminderId, ex.Message); }
-            await db.SaveChangesAsync(CancellationToken.None);
-        }
-        return sent;
-    }
+    // ================= 6. Follow-ups =================
+    // The Autopilot never sends follow-ups. Due follow-ups are reminders with a ready draft (AI Inbox tasks and Vendor Emails →
+    // Follow-ups); the executive approves each one and sends it from the app or copies it into Outlook.
 
     // ================= 7. Read vendor replies =================
 

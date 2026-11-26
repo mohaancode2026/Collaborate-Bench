@@ -153,10 +153,11 @@ public sealed class AutopilotController(AppDbContext db, DataService data, Autop
         var s = await autopilot.SettingsAsync();
         var turnedOn = input.Enabled && !s.Enabled;
         s.Enabled = input.Enabled; s.MinScore = input.MinScore; s.MaxNewPerConsultant = input.MaxNewPerConsultant; s.MaxPreparePerRun = input.MaxPreparePerRun;
-        s.IncludeExternalJobs = input.IncludeExternalJobs; s.AutoFollowUp = input.AutoFollowUp; s.MaxAutoFollowUps = input.MaxAutoFollowUps;
+        // Follow-ups are never sent automatically (the executive approves each draft), so the old switch always stays off.
+        s.IncludeExternalJobs = input.IncludeExternalJobs; s.AutoFollowUp = false; s.MaxAutoFollowUps = input.MaxAutoFollowUps;
         s.ClassifyReplies = input.ClassifyReplies; s.RunEveryMinutes = input.RunEveryMinutes; s.EmailNotifications = input.EmailNotifications;
         await db.SaveChangesAsync();
-        await audit.LogAsync("AUTOPILOT_SETTINGS", $"Autopilot {(s.Enabled ? "on" : "off")}: min match {s.MinScore}%, {s.MaxNewPerConsultant}/consultant/day, follow-ups {(s.AutoFollowUp ? $"on (max {s.MaxAutoFollowUps})" : "off")}");
+        await audit.LogAsync("AUTOPILOT_SETTINGS", $"Autopilot {(s.Enabled ? "on" : "off")}: min match {s.MinScore}%, {s.MaxNewPerConsultant}/consultant/day");
         if (turnedOn) worker.Kick(fullRun: true);
         return await Settings();
     }

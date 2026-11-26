@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { api, ApiError, Consultant, download, fetchFile, InboxAttachment, InboxDetail, InboxDraft, InboxItem, InboxMatch, InboxSummary, InboxTask } from '../api';
+import { AlreadySent, api, ApiError, Consultant, download, fetchFile, InboxAttachment, InboxDetail, InboxDraft, InboxItem, InboxMatch, InboxSummary, InboxTask } from '../api';
 import { useAuth } from '../auth';
 import { TaskDraftButton } from '../taskDraft';
 import { ComposeDialog, ComposeInitial } from '../compose';
-import { inWorkday, InboxAlertPrefs, loadAlertPrefs, playChime, saveAlertPrefs } from '../inboxWatch';
+import { easternNow, hourLabel, inWorkday, InboxAlertPrefs, loadAlertPrefs, playChime, refreshMail, saveAlertPrefs } from '../inboxWatch';
 import { AiBadge, Alert, ago, Empty, Field, FieldErrors, Modal, Ring, Spinner, useErrorHandler, useToast } from '../ui';
 
 type View = 'all' | 'high' | 'jobs' | 'matches' | 'reply' | 'interviews' | 'tasks' | 'sent' | 'awaiting' | 'noise' | 'done';
@@ -55,14 +55,13 @@ export default function Inbox() {
   const refresh = useCallback(() => { loadSummary(); loadList(); window.dispatchEvent(new Event('cbs:inbox')); }, [loadSummary, loadList]);
   useEffect(() => { loadSummary(); }, [loadSummary]);
   useEffect(() => { const t = setTimeout(loadList, q ? 300 : 0); return () => clearTimeout(t); }, [loadList, q]);
-  // The server reads Outlook every couple of minutes by itself; the page just picks up what's new.
+  // The app reads Outlook every 20 seconds while a tab is visible (inboxWatch) and fires 'cbs:inbox'; the page reloads quietly.
+  // Opening the page asks for a read straight away.
   useEffect(() => {
-    const tick = () => { if (document.visibilityState === 'visible') { loadSummary(); loadList(true); } };
-    const t = setInterval(tick, 45_000);
     const h = () => { loadSummary(); loadList(true); };
     window.addEventListener('cbs:inbox', h);
-    document.addEventListener('visibilitychange', tick);
-    return () => { clearInterval(t); window.removeEventListener('cbs:inbox', h); document.removeEventListener('visibilitychange', tick); };
+    refreshMail();
+    return () => window.removeEventListener('cbs:inbox', h);
   }, [loadSummary, loadList]);
 
   /** Re-match recent job emails against the bench, using each consultant's skills and latest resume, then show the matches. */
@@ -163,6 +162,7 @@ function EmailDetail({ id, canTailor, onClose, onChanged, onTask, onEditTask }: 
   const [drafting, setDrafting] = useState<number | 'reply' | null>(null);
   const [compose, setCompose] = useState<{ initial: ComposeInitial; replyId?: number; files?: File[] } | null>(null);
   const [showBody, setShowBody] = useState(false);
+  const [sentWarn, setSentWarn] = useState<{ m: InboxMatch; list: AlreadySent[] } | null>(null);
 
   const load = useCallback(() => { api<InboxDetail>(`/inbox/${id}`).then(setD).catch(e => { onError(e); onClose(); }); }, [id, onError, onClose]);
   useEffect(load, [load]);
@@ -191,6 +191,15 @@ function EmailDetail({ id, canTailor, onClose, onChanged, onTask, onEditTask }: 
       }
       setCompose({ initial: { to: r.to, subject: r.subject, body: r.body }, replyId: r.replyToInboxItemId ?? undefined, files });
     } catch (e) { onError(e); } finally { setDrafting(null); }
+  };
+  /** Pitch: first check whether this profile already went to the same vendor or client (anyone on the team); warn before drafting. */
+  const pitch = async (m: InboxMatch) => {
+    setDrafting(m.consultantId);
+    let list: AlreadySent[] = [];
+    try { list = await api<AlreadySent[]>(`/inbox/${id}/already-sent`, { query: { consultantId: m.consultantId } }); }
+    catch { /* the check is a help, not a gate: carry on */ }
+    if (list.length > 0) { setDrafting(null); setSentWarn({ m, list }); return; }
+    await draft(m.consultantId);
   };
   const tailor = (m: InboxMatch) => {
     const j = i.job;
@@ -240,17 +249,32 @@ function EmailDetail({ id, canTailor, onClose, onChanged, onTask, onEditTask }: 
             <div className="muted" style={{ fontSize: 13 }}>{[i.job.location, i.job.mode, i.job.type, i.job.rate ? `$${i.job.rate}/hr` : 'rate not given', i.job.minYears ? `${i.job.minYears}+ yrs` : null, i.job.visas.length ? i.job.visas.join('/') : null].filter(Boolean).join(' · ')}</div>
             <div style={{ marginTop: 4 }}>{i.job.skills.map(s => <span key={s} className="tag">{s}</span>)}</div></div>
           <h4 style={{ marginTop: 14 }}>Your consultants who fit</h4>
+          {i.matches.length > 0 && <p className="muted" style={{ fontSize: 12 }}>Ranked by visa (H-1B first), skill match, experience, rate, then location.
+            {i.job.visas.length > 0 && i.job.visas.every(v => /^(gc|usc|green\s*card|u\.?s\.?\s*citizen|citizen)$/i.test(v.trim())) && <b> Green card / US citizen only: other visas are left out.</b>}
+            {i.matches.some(m => m.matched == null) && <> Click "Fetch matching profiles" to refresh older matches.</>}</p>}
           {i.matches.length === 0 ? <p className="muted" style={{ fontSize: 13 }}>None of your available consultants match this job closely.</p>
-            : i.matches.map(m => (
+            : i.matches.map((m, rank) => (
               <div key={m.consultantId} className="im-match">
                 <Ring score={m.score} size={40} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <b>{m.name}</b> <small className="muted">{m.title} · {m.exp} yrs</small>{m.resumeReady && <span className="tag c" title="Strong fit with enough experience: ready for the resume helper">Resume ready</span>}
-                  <div className="muted" style={{ fontSize: 12.5 }}>{m.why}</div>
+                  <small className="muted">#{rank + 1}</small> <b>{m.name}</b> <small className="muted">{m.title} · {m.exp} yrs</small>{m.resumeReady && <span className="tag c" title="Strong fit with enough experience: ready for the resume helper">Resume ready</span>}
+                  {m.matched != null ? <>
+                    <div style={{ fontSize: 12.5, marginTop: 2 }}>
+                      <span className={`tag ${m.visa ? (/^h-?1b$/i.test(m.visa) ? 'g' : '') : 'y'}`} title="Visa">{m.visa ?? 'Visa not known'}</span>
+                      <span className="tag" title="Share of the job's skills they have">{m.skillPct ?? 0}% skills</span>
+                      {m.rate ? <span className="tag s" title="Their pay rate">${Math.round(m.rate)}/hr</span> : <span className="tag s">rate not set</span>}
+                      {m.location && <span className="tag s">{m.location}</span>}
+                    </div>
+                    {(m.matched.length > 0 || (m.missing?.length ?? 0) > 0) && <div style={{ fontSize: 12, marginTop: 3 }}>
+                      {m.matched.map(s => <span key={'h' + s} className="tag g" title="Has this skill">✓ {s}</span>)}
+                      {(m.missing ?? []).map(s => <span key={'m' + s} className="tag r" title="Missing this skill">✗ {s}</span>)}
+                    </div>}
+                  </> : <div className="muted" style={{ fontSize: 12.5 }}>{m.why}</div>}
                 </div>
                 <div className="im-mact">
                   <button className="btn btn-sm btn-outline" title="Their latest resume" onClick={() => download(`/resumes/submission/${m.consultantId}`, {}, `${m.name} - Resume.docx`).catch(onError)}>📄 Resume</button>
-                  <button className="btn btn-sm btn-outline" onClick={() => draft(m.consultantId)} disabled={drafting !== null}>{drafting === m.consultantId ? <Spinner dark /> : 'Pitch'}</button>
+                  <button className="btn btn-sm btn-outline" onClick={() => pitch(m)} disabled={drafting !== null}
+                    title="Checks it hasn't already gone to this vendor or client, then drafts the pitch with the resume attached">{drafting === m.consultantId ? <Spinner dark /> : 'Pitch'}</button>
                   {canTailor && <button className={`btn btn-sm ${m.resumeReady ? 'btn-primary' : 'btn-outline'}`} onClick={() => tailor(m)}>✦ Tailor resume</button>}
                 </div>
               </div>))}
@@ -272,6 +296,17 @@ function EmailDetail({ id, canTailor, onClose, onChanged, onTask, onEditTask }: 
       {compose && (
         <ComposeDialog title="Reply" initial={compose.initial} initialFiles={compose.files} replyToInboxItemId={compose.replyId} onClose={() => setCompose(null)}
           onSent={() => { setCompose(null); notify('success', 'Reply sent', 'Sent in the same Outlook thread. The email is marked done.'); onChanged(); load(); }} />)}
+      {sentWarn && (
+        <Modal title={`${sentWarn.m.name} already went to this ${sentWarn.list.some(x => x.kind === 'Same client') ? 'client' : 'vendor'}`} onClose={() => setSentWarn(null)}
+          footer={<><button className="btn btn-outline" onClick={() => setSentWarn(null)}>Don't send</button>
+            <button className="btn btn-danger" onClick={() => { const cid = sentWarn.m.consultantId; setSentWarn(null); draft(cid); }}>Pitch anyway</button></>}>
+          <Alert type="warning" title="Sending the same profile twice to a vendor or client can break the RTR and look bad to the client.">
+            Check with the vendor first, or pick another consultant.</Alert>
+          <ul style={{ margin: '10px 0 0', paddingLeft: 18, fontSize: 13.5 }}>
+            {sentWarn.list.map((x, n) => <li key={n} style={{ marginBottom: 6 }}><span className={`tag ${x.kind === 'Same client' ? 'r' : 'y'}`}>{x.kind}</span>
+              {x.text} <span className="muted">· {when(x.whenUtc)}{x.by ? ` · by ${x.by}` : ''}</span></li>)}
+          </ul>
+        </Modal>)}
     </div>
   );
 }
@@ -467,15 +502,15 @@ function AlertsDialog({ onClose }: { onClose: () => void }) {
   const ask = async () => { if (typeof Notification === 'undefined') return; setPerm(await Notification.requestPermission()); };
   const save = () => { saveAlertPrefs(p); notify('success', 'Alert settings saved'); onClose(); };
   const test = () => {
-    playChime();
+    if (p.sound) playChime();
     if (perm === 'granted') { try { new Notification('High priority: test alert', { body: 'This is how new high-priority emails will look.', icon: '/brand/collaborate-mark.png' }); } catch { /* ignore */ } }
     notify('warning', 'High priority: test alert', 'This is how new high-priority emails will look.');
   };
   return (
     <Modal title="High-priority alerts" onClose={onClose}
       footer={<><button className="btn btn-outline" style={{ marginRight: 'auto' }} onClick={test}>Test alert</button><button className="btn btn-outline" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={save}>Save</button></>}>
-      <p className="muted" style={{ marginTop: 0 }}>When a new high-priority email arrives during your workday, you get a notification and a sound. Outside those hours the tile still turns red, quietly.</p>
-      <label className="check"><input type="checkbox" checked={p.sound} onChange={e => setP({ ...p, sound: e.target.checked })} /><span>Play a sound</span></label>
+      <p className="muted" style={{ marginTop: 0 }}>When a new high-priority email arrives during your shift (US Eastern time), you get a notification and a sound. Outside your shift the tile still turns red, quietly.</p>
+      <label className="check"><input type="checkbox" checked={p.sound} onChange={e => setP({ ...p, sound: e.target.checked })} /><span>Play a sound <small className="muted">(turn off for a silent notification)</small></span></label>
       <label className="check"><input type="checkbox" checked={p.desktop} onChange={e => setP({ ...p, desktop: e.target.checked })} /><span>Desktop notification</span></label>
       {p.desktop && perm !== 'granted' && (
         <Alert type="info" title={perm === 'denied' ? 'Notifications are blocked for this site' : perm === 'unsupported' ? "This browser doesn't support notifications" : 'Allow notifications'}>
@@ -483,10 +518,11 @@ function AlertsDialog({ onClose }: { onClose: () => void }) {
             : perm === 'denied' ? 'Allow them in the browser’s site settings (the lock icon in the address bar).' : null}
         </Alert>)}
       <div className="row2">
-        <Field label="Workday starts"><select className="inp" value={p.startHour} onChange={e => setP({ ...p, startHour: Number(e.target.value) })}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{`${h}:00`}</option>)}</select></Field>
-        <Field label="Workday ends"><select className="inp" value={p.endHour} onChange={e => setP({ ...p, endHour: Number(e.target.value) })}>{Array.from({ length: 24 }, (_, h) => <option key={h + 1} value={h + 1}>{`${h + 1}:00`}</option>)}</select></Field>
+        <Field label="Shift starts (US Eastern)"><select className="inp" value={p.startHour} onChange={e => setP({ ...p, startHour: Number(e.target.value) })}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourLabel(h)} ET</option>)}</select></Field>
+        <Field label="Shift ends (US Eastern)"><select className="inp" value={p.endHour} onChange={e => setP({ ...p, endHour: Number(e.target.value) })}>{Array.from({ length: 24 }, (_, h) => <option key={h + 1} value={h + 1}>{hourLabel(h + 1)} ET</option>)}</select></Field>
       </div>
-      <p className="muted" style={{ fontSize: 12.5 }}>Monday to Friday, in this computer’s time zone. Right now: {inWorkday(p) ? 'inside your workday, alerts are on' : 'outside your workday, alerts are quiet'}.</p>
+      {p.startHour === p.endHour % 24 && <p style={{ color: 'var(--bad)', fontSize: 12.5 }}>Start and end are the same time, so alerts would never play. Pick a different end.</p>}
+      <p className="muted" style={{ fontSize: 12.5 }}>Monday to Friday, US Eastern time (daylight saving handled), whatever this computer's time zone is. It's now {easternNow().label}: {inWorkday(p) ? 'inside your shift, alerts are on' : 'outside your shift, alerts are quiet'}.</p>
     </Modal>
   );
 }

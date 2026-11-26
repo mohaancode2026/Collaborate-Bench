@@ -23,7 +23,7 @@ public sealed class InboxController(AppDbContext db, ICurrentUser me, MailSync s
     private static readonly string[] Statuses = ["New", "Done", "Dismissed"];
     private static readonly string[] TaskStatuses = ["Open", "Done", "Dismissed"];
 
-    /// <summary>Emails, newest first. <paramref name="view"/>: all (default, no noise) | high | jobs | reply | interviews | noise | done |
+    /// <summary>Emails, newest first (in every view). <paramref name="view"/>: all (default, no noise) | high | jobs | reply | interviews | noise | done |
     /// sent (what you sent, with whether it got a reply) | awaiting (sent, no reply yet).</summary>
     [HttpGet, RequirePerm("mail.view")]
     public async Task<List<InboxItemDto>> List([FromQuery] string? view, [FromQuery] string? q, CancellationToken ct)
@@ -59,9 +59,9 @@ public sealed class InboxController(AppDbContext db, ICurrentUser me, MailSync s
                 Answered = all.Where(r => r.ConversationId != null && r.ConversationId == i.ConversationId && r.Direction != i.Direction && r.ReceivedUtc > i.ReceivedUtc)
                     .Max(r => (DateTime?)r.ReceivedUtc),
             }).ToListAsync(ct);
-        // Inbox: high first, then newest, so what needs attention is on top. Sent: newest first.
-        return rows.Select(r => ToDto(r.i, r.Open, r.Answered))
-            .OrderBy(d => !sentView && d.Status == "New" ? Array.IndexOf(InboxTriage.Priorities, d.Priority) : 9).ThenByDescending(d => d.ReceivedUtc).ToList();
+        // Newest first, like Outlook, so new mail is always on top. High priority is marked on each row and has its own tab;
+        // sorting it first pushed new Medium/Low mail dozens of rows down, where it looked missing.
+        return rows.Select(r => ToDto(r.i, r.Open, r.Answered)).ToList();
     }
 
     /// <summary>Counts for the inbox tile and the browser alert (polled every minute).</summary>
@@ -88,6 +88,17 @@ public sealed class InboxController(AppDbContext db, ICurrentUser me, MailSync s
         var due = await tasks.CountAsync(t => t.DueUtc != null && t.DueUtc <= endOfDay, ct);
         return new InboxSummaryDto(ms.Value.Configured, conn?.Status == "Active", conn?.LastSyncUtc, counts?.Open ?? 0, counts?.High ?? 0, counts?.Jobs ?? 0,
             counts?.Reply ?? 0, interviews, due, latest?.InboxItemId, latest?.Subject, latest?.From, latest?.ReceivedUtc, awaiting);
+    }
+
+    /// <summary>
+    /// Called by open pages every few seconds: reads your Outlook now unless it was read in the last 10 seconds, so new mail
+    /// shows up right away instead of at the next scheduled sync. Cheap when nothing is due; no-op when Outlook isn't connected.
+    /// </summary>
+    [HttpPost("refresh"), RequirePerm("mail.view")]
+    public async Task<object> Refresh(CancellationToken ct)
+    {
+        var r = await sync.SyncIfStaleAsync(me.RequiredId, TimeSpan.FromSeconds(10), ct);
+        return new { synced = r != null, read = r?.Read ?? 0 };
     }
 
     /// <summary>Reads new Outlook mail now (vendor tracking + AI Inbox) instead of waiting for the next scheduled sync.</summary>
@@ -139,6 +150,86 @@ public sealed class InboxController(AppDbContext db, ICurrentUser me, MailSync s
         }
         await db.SaveChangesAsync(ct);
         return ToDto(item, await db.InboxTasks.CountAsync(t => t.InboxItemId == id && t.Status == "Open", ct));
+    }
+
+    /// <summary>
+    /// Before a profile is pitched for this job email: has this consultant already gone to the same vendor or the same client?
+    /// Looks across the whole team (a duplicate breaks the RTR whoever sent it): submissions to the same end client or through the
+    /// same vendor, and emails about the consultant sent to the vendor's company (or, for Gmail-style recruiters, that address).
+    /// Empty list = nothing found.
+    /// </summary>
+    [HttpGet("{id:int}/already-sent"), RequirePerm("mail.view")]
+    public async Task<List<AlreadySentDto>> AlreadySent(int id, [FromQuery] int consultantId, CancellationToken ct)
+    {
+        var item = await Own(id, ct);
+        var job = InboxTriage.JobOf(item.JobJson);
+        var client = job?.Client?.Trim() is { Length: > 1 } cl ? cl : null;
+        var vendorAddress = (item.Direction == "In" ? item.FromAddress : (item.ToAddresses ?? "").Split(',', StringSplitOptions.TrimEntries).FirstOrDefault() ?? "").ToLowerInvariant();
+        var at = vendorAddress.LastIndexOf('@');
+        var domain = at > 0 ? vendorAddress[(at + 1)..] : "";
+        var personal = domain.Length == 0 || VendorMatcher.FreeMail.Contains(domain);
+        var vendors = await db.Vendors.AsNoTracking().ToListAsync(ct);
+        var vendorId = vendorAddress.Length > 0 ? new VendorMatcher(vendors).Match(vendorAddress) : null;
+        var vendorName = vendors.FirstOrDefault(v => v.VendorId == vendorId)?.Name;
+
+        var found = new List<AlreadySentDto>();
+        // Submissions (anyone's) to the same end client or through the same vendor.
+        var subs = await db.Submissions.IgnoreQueryFilters().AsNoTracking().Where(s => s.ConsultantId == consultantId)
+            .Select(s => new { s.CreatedUtc, s.Stage, s.Requirement.Title, s.Requirement.EndClient, s.Requirement.Vendor, By = s.Owner.FullName }).ToListAsync(ct);
+        foreach (var s in subs)
+        {
+            var sameClient = client != null && string.Equals(s.EndClient?.Trim(), client, StringComparison.OrdinalIgnoreCase);
+            var sameVendor = vendorName != null && string.Equals(s.Vendor?.Trim(), vendorName, StringComparison.OrdinalIgnoreCase);
+            if (sameClient || sameVendor)
+                found.Add(new AlreadySentDto(s.CreatedUtc, sameClient ? "Same client" : "Same vendor",
+                    $"Submitted to \"{s.Title}\" ({s.EndClient}, via {s.Vendor}), now {s.Stage}", s.By));
+        }
+        // Emails about the consultant (anyone's) to the same vendor company, or to that exact address for personal mail.
+        if (vendorAddress.Length > 0)
+        {
+            var sentToVendor = db.InboxItems.AsNoTracking().Where(i => i.ConsultantId == consultantId && i.Direction == "Out" && i.ToAddresses != null);
+            sentToVendor = personal ? sentToVendor.Where(i => i.ToAddresses!.Contains(vendorAddress)) : sentToVendor.Where(i => i.ToAddresses!.Contains("@" + domain));
+            foreach (var e in await sentToVendor.OrderByDescending(i => i.ReceivedUtc).Take(10)
+                         .Select(i => new { i.ReceivedUtc, i.Subject, i.ToAddresses, By = i.User.FullName }).ToListAsync(ct))
+                found.Add(new AlreadySentDto(e.ReceivedUtc, "Same vendor", $"Emailed to {e.ToAddresses}: \"{e.Subject}\"", e.By));
+            if (vendorId is int vid)
+                foreach (var e in await db.VendorEmails.AsNoTracking().Where(x => x.ConsultantId == consultantId && x.Direction == "Out" && x.VendorId == vid)
+                             .OrderByDescending(x => x.SentUtc).Take(10).Select(x => new { x.SentUtc, x.Subject, x.ToAddresses, By = x.User.FullName }).ToListAsync(ct))
+                    if (!found.Any(f => f.Text.Contains(e.Subject) && Math.Abs((f.WhenUtc - e.SentUtc).TotalMinutes) < 5))
+                        found.Add(new AlreadySentDto(e.SentUtc, "Same vendor", $"Emailed to {e.ToAddresses}: \"{e.Subject}\"", e.By));
+        }
+        return found.OrderByDescending(f => f.WhenUtc).Take(10).ToList();
+    }
+
+    /// <summary>
+    /// Ready draft for Reply / Follow up on a tracked vendor email (Vendor Emails page and its follow-up reminders). Uses the same
+    /// writer as the AI Inbox: the same Outlook message there, or the latest one in its thread; otherwise a short rules-based draft.
+    /// Only your own mailbox's emails (you reply from your Outlook). Nothing is sent.
+    /// </summary>
+    [HttpPost("vendor-emails/{id:int}/draft"), RequirePerm("mail.view"), EnableRateLimiting("ai")]
+    public async Task<InboxDraftDto> VendorEmailDraft(int id, CancellationToken ct)
+    {
+        var meId = me.RequiredId;
+        var e = await db.VendorEmails.AsNoTracking().FirstOrDefaultAsync(x => x.VendorEmailId == id && x.UserId == meId, ct) ?? throw AppException.NotFound("Email");
+        var itemId = await db.InboxItems.Where(i => i.UserId == meId && i.MessageId == e.MessageId).Select(i => (int?)i.InboxItemId).FirstOrDefaultAsync(ct);
+        if (itemId is null && e.ConversationId != null)
+            itemId = await db.InboxItems.Where(i => i.UserId == meId && i.ConversationId == e.ConversationId)
+                .OrderByDescending(i => i.ReceivedUtc).Select(i => (int?)i.InboxItemId).FirstOrDefaultAsync(ct);
+        if (itemId is int iid) return await Draft(iid, new InboxDraftInput(e.ConsultantId, null), ct);
+
+        var consultant = e.ConsultantId is int cid
+            ? await db.Consultants.IgnoreQueryFilters().AsNoTracking().Where(x => x.ConsultantId == cid).Select(x => x.FullName).FirstOrDefaultAsync(ct) : null;
+        var incoming = e.Direction == "In";
+        var to = incoming ? e.FromAddress : (e.ToAddresses ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        var name = incoming ? e.FromName
+            : await db.VendorEmails.AsNoTracking().Where(x => x.UserId == meId && x.FromAddress == to && x.FromName != null).Select(x => x.FromName).FirstOrDefaultAsync(ct);
+        var first = (name ?? "").Split(' ', ',').FirstOrDefault(w => w.Length > 1 && !w.Contains('@')) ?? "there";
+        var about = consultant != null ? $"{consultant}'s profile" : "this";
+        var body = incoming
+            ? $"Hi {first},\n\nThank you for your email about {about}. I'm looking into it and will get back to you shortly with the details.\n\nPlease let me know if you need anything else in the meantime."
+            : $"Hi {first},\n\nFollowing up on {about} I sent below. Is there any update or feedback from the client?\n\nHappy to set up a quick call if that helps.";
+        var subject = e.Subject.StartsWith("RE:", StringComparison.OrdinalIgnoreCase) ? e.Subject : "RE: " + e.Subject;
+        return new InboxDraftDto(to, InboxTriage.Cut(subject, 255), body, null, "rules", null);
     }
 
     /// <summary>AI-written reply to the email (FRD-004), ready to review in the email window. Nothing is sent.

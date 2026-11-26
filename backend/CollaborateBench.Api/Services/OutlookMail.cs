@@ -39,6 +39,11 @@ public sealed class MicrosoftOptions
     /// <summary>True when TenantId names one organisation. "common" / "organizations" / "consumers" would let any Microsoft account in.</summary>
     public bool SingleTenant => !string.IsNullOrWhiteSpace(TenantId) && TenantId.Trim().ToLowerInvariant() is not ("common" or "organizations" or "consumers");
     public int MailSyncMinutes { get; set; } = 10;
+    /// <summary>How often every mailbox is read, in seconds (minimum 15). When set it wins over <see cref="MailSyncMinutes"/>.</summary>
+    public int MailSyncSeconds { get; set; }
+    /// <summary>How many mailboxes are read at the same time.</summary>
+    public int MailSyncParallel { get; set; } = 4;
+    public TimeSpan MailSyncEvery => MailSyncSeconds > 0 ? TimeSpan.FromSeconds(Math.Max(15, MailSyncSeconds)) : TimeSpan.FromMinutes(Math.Max(1, MailSyncMinutes));
     public int FirstSyncDays { get; set; } = 30;
     public int MaxMessagesPerSync { get; set; } = 500;
     public bool Configured => !string.IsNullOrWhiteSpace(TenantId) && !string.IsNullOrWhiteSpace(ClientId) && !string.IsNullOrWhiteSpace(ClientSecret);
@@ -172,7 +177,11 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
     IOptions<FollowUpOptions> followUps, IDataProtectionProvider dp, ILogger<MailSync> log) : BackgroundService
 {
     private readonly Channel<int> _kicks = Channel.CreateUnbounded<int>();
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    // One sync per mailbox at a time (keeps its watermark and token rotation simple), and a few mailboxes in parallel,
+    // so one slow mailbox (e.g. AI reading a burst of new mail) doesn't hold up everyone else's.
+    private readonly ConcurrentDictionary<int, SemaphoreSlim> _mailboxLocks = new();
+    private readonly SemaphoreSlim _parallel = new(Math.Clamp(options.Value.MailSyncParallel, 1, 16));
+    private SemaphoreSlim MailboxLock(int userId) => _mailboxLocks.GetOrAdd(userId, _ => new SemaphoreSlim(1, 1));
     private readonly ConcurrentDictionary<int, (string Token, DateTime ExpiresUtc)> _access = new();
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _tokenLocks = new();
 
@@ -221,8 +230,9 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
     {
         var o = options.Value;
         if (!o.Configured) { log.LogInformation("Outlook mail tracking is off (Microsoft:TenantId, ClientId and ClientSecret are not set)."); return; }
-        var every = TimeSpan.FromMinutes(Math.Max(1, o.MailSyncMinutes));
-        var next = DateTime.UtcNow.AddSeconds(30);
+        var every = o.MailSyncEvery;
+        log.LogInformation("Outlook mail sync every {Seconds}s, {Parallel} mailboxes at a time.", (int)every.TotalSeconds, Math.Clamp(o.MailSyncParallel, 1, 16));
+        var next = DateTime.UtcNow.AddSeconds(15);
         while (!stop.IsCancellationRequested)
         {
             int? only = null;
@@ -236,12 +246,19 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
             catch (OperationCanceledException) when (!stop.IsCancellationRequested) { /* timer */ }
             catch (OperationCanceledException) { return; }
 
-            try
+            if (only is int id and > 0)
             {
-                if (only is int id and > 0) await SyncAsync(id, stop);
-                else { await SyncAllAsync(stop); next = DateTime.UtcNow + every; }
+                // A single mailbox asked for (sign-in, mail sent): run it alongside, so the schedule isn't held up.
+                _ = Task.Run(async () =>
+                {
+                    try { await SyncAsync(id, stop); }
+                    catch (Exception ex) when (!stop.IsCancellationRequested) { log.LogError(ex, "Mail sync for user {User} failed", id); }
+                }, stop);
+                continue;
             }
+            try { await SyncAllAsync(stop); }
             catch (Exception ex) when (!stop.IsCancellationRequested) { log.LogError(ex, "Mail sync failed"); }
+            next = DateTime.UtcNow + every;
         }
     }
 
@@ -251,13 +268,53 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
         using (var scope = scopes.CreateScope())
             ids = await scope.ServiceProvider.GetRequiredService<AppDbContext>().MailConnections
                 .Where(c => c.Status == "Active").Select(c => c.UserId).ToListAsync(ct);
-        foreach (var id in ids) await SyncAsync(id, ct);
+        await Parallel.ForEachAsync(ids, new ParallelOptions { MaxDegreeOfParallelism = Math.Clamp(options.Value.MailSyncParallel, 1, 16), CancellationToken = ct },
+            async (id, token) =>
+            {
+                // A mailbox already being read (the user pressed refresh) is skipped this round rather than read twice.
+                var gate = MailboxLock(id);
+                if (!await gate.WaitAsync(0, token)) return;
+                try { await SyncLockedAsync(id, token); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Mail sync for user {User} failed", id); }
+                finally { gate.Release(); }
+            });
     }
 
     /// <summary>Syncs one mailbox. Never throws for mailbox problems; they're saved on the connection for the user to see.</summary>
     public async Task<SyncResult> SyncAsync(int userId, CancellationToken ct)
     {
-        await _gate.WaitAsync(ct);   // one sync at a time keeps Graph throttling and token rotation simple
+        var gate = MailboxLock(userId);
+        await gate.WaitAsync(ct);
+        try { return await SyncLockedAsync(userId, ct); }
+        finally { gate.Release(); }
+    }
+
+    /// <summary>
+    /// Reads the mailbox now unless it was read in the last <paramref name="maxAge"/> (or is being read: then waits for that one).
+    /// For pages that refresh themselves every few seconds. Null when it was fresh enough, or Outlook isn't connected.
+    /// </summary>
+    public async Task<SyncResult?> SyncIfStaleAsync(int userId, TimeSpan maxAge, CancellationToken ct)
+    {
+        var gate = MailboxLock(userId);
+        await gate.WaitAsync(ct);
+        try
+        {
+            using (var scope = scopes.CreateScope())
+            {
+                var conn = await scope.ServiceProvider.GetRequiredService<AppDbContext>().MailConnections.AsNoTracking()
+                    .Where(c => c.UserId == userId).Select(c => new { c.Status, c.LastSyncUtc }).FirstOrDefaultAsync(ct);
+                if (conn is null || conn.Status != "Active") return null;
+                if (conn.LastSyncUtc is { } last && DateTime.UtcNow - last < maxAge) return null;
+            }
+            return await SyncLockedAsync(userId, ct);
+        }
+        finally { gate.Release(); }
+    }
+
+    /// <summary>The sync itself. The caller holds this mailbox's lock.</summary>
+    private async Task<SyncResult> SyncLockedAsync(int userId, CancellationToken ct)
+    {
+        await _parallel.WaitAsync(ct);
         try
         {
             using var scope = scopes.CreateScope();
@@ -293,7 +350,9 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
                     .Select(c => (c.ConsultantId, Re: new Regex($@"\b{Regex.Escape(c.FullName.Trim())}\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant), c.FullName.Length))
                     .OrderByDescending(c => c.Length).ToList();
                 var ids = messages.Select(m => Str(m["id"])).OfType<string>().ToList();
-                var seen = new HashSet<string>();
+                // Same comparison as the database (its collation ignores case), so two Outlook ids that differ only in case
+                // can't both be inserted and fail the whole batch on the unique (UserId, MessageId) index.
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var chunk in ids.Chunk(200))
                 {
                     var c = chunk.ToList();
@@ -335,7 +394,22 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
             conn.Status = "Active";
             conn.LastError = null;
             try { await db.SaveChangesAsync(ct); }
-            catch (DbUpdateException e) when (SqlErrors.IsDuplicate(e)) { log.LogInformation("Mail sync for user {User} overlapped another sync; it will catch up next run.", userId); }
+            catch (DbUpdateException e) when (SqlErrors.IsDuplicate(e))
+            {
+                // One email already stored (or clashing with another) used to throw the whole batch away and leave the watermark
+                // where it was, so the same batch failed on every run and nothing new was ever tracked. Save them one at a time instead.
+                var pending = db.ChangeTracker.Entries<VendorEmail>().Where(x => x.State == EntityState.Added).Select(x => x.Entity).ToList();
+                foreach (var p in pending) db.Entry(p).State = EntityState.Detached;
+                await db.SaveChangesAsync(ct);   // the connection's watermark and status
+                var skipped = 0;
+                foreach (var p in pending)
+                {
+                    db.VendorEmails.Add(p);
+                    try { await db.SaveChangesAsync(ct); }
+                    catch (DbUpdateException one) when (SqlErrors.IsDuplicate(one)) { db.Entry(p).State = EntityState.Detached; skipped++; tracked--; }
+                }
+                log.LogInformation("Mail sync for user {User}: {Skipped} email(s) were already tracked and skipped.", userId, skipped);
+            }
             if (tracked > 0) log.LogInformation("Mail sync for user {User}: read {Read}, tracked {Tracked} vendor emails", userId, messages.Count, tracked);
             try { await FollowUps.ReconcileAsync(db, userId, followUps.Value, ct); }
             catch (Exception ex) when (ex is not OperationCanceledException) { log.LogWarning(ex, "Follow-up reminders for user {User} not updated", userId); }
@@ -344,7 +418,7 @@ public sealed class MailSync(IServiceScopeFactory scopes, IHttpClientFactory htt
             catch (Exception ex) when (ex is not OperationCanceledException) { log.LogWarning(ex, "AI Inbox for user {User} not updated", userId); }
             return new SyncResult(messages.Count, tracked, "Active", null);
         }
-        finally { _gate.Release(); }
+        finally { _parallel.Release(); }
     }
 
     private static async Task<SyncResult> FailAsync(AppDbContext db, MailConnection conn, string status, string error, CancellationToken ct)
@@ -407,9 +481,28 @@ public sealed record OutgoingAttachment(string Name, string ContentType, byte[] 
 public sealed record OutgoingMail(List<string> To, List<string> Cc, string Subject, string Body, List<OutgoingAttachment> Attachments, string? ReplyToMessageId);
 
 /// <summary>Sends mail as the signed-in user through Microsoft Graph, so it lands in their own Sent Items and the vendor's thread.</summary>
-public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync sync, IHttpClientFactory http, MailSignatureService signatures, ILogger<MailSender> log)
+public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync sync, IHttpClientFactory http, MailSignatureService signatures, IMemoryCache cache, ILogger<MailSender> log)
 {
+    /// <summary>How long the same email (same sender, recipients, subject, text and thread) is refused after it was sent or while it is sending.</summary>
+    private static readonly TimeSpan DuplicateWindow = TimeSpan.FromMinutes(5);
+
     public async Task SendAsync(int userId, OutgoingMail mail, CancellationToken ct)
+    {
+        // Outlook sometimes takes up to a minute to confirm a send. People then click Send again (or reopen the draft and resend),
+        // and the vendor got the same email twice. The same email is refused while it is sending and for a few minutes after.
+        var key = "mail-sent:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\u001f",
+            userId, string.Join(",", mail.To.Order()), string.Join(",", mail.Cc.Order()), mail.Subject.Trim(), mail.Body.Trim(), mail.ReplyToMessageId ?? "",
+            string.Join(",", mail.Attachments.Select(a => a.Name + ":" + a.Bytes.Length))))));
+        if (cache.TryGetValue(key, out _))
+            throw AppException.Conflict("MAIL_DUPLICATE", "Already sent",
+                "This same email was sent a moment ago (or is still being sent). Check your Sent Items in Outlook before sending it again.");
+        cache.Set(key, true, DuplicateWindow);
+        try { await SendOnceAsync(userId, mail, ct); }
+        catch (AppException e) when (e.Code != "MAIL_UNCONFIRMED") { cache.Remove(key); throw; }   // it surely didn't go: allow a retry
+        catch (OperationCanceledException) { cache.Remove(key); throw; }
+    }
+
+    private async Task SendOnceAsync(int userId, OutgoingMail mail, CancellationToken ct)
     {
         var conn = await db.MailConnections.FirstOrDefaultAsync(c => c.UserId == userId, ct)
                    ?? throw AppException.Conflict("MAIL_NOT_CONNECTED", "Outlook isn't connected", "Connect your Outlook mailbox to send email from the portal.");
@@ -417,6 +510,8 @@ public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync syn
             throw AppException.Conflict("MAIL_RECONNECT", "Outlook needs to be reconnected", conn.LastError ?? "Connect Outlook again, then send.");
         if (!MailSync.CanSend(conn.GrantedScopes))
             throw AppException.Conflict("MAIL_SEND_CONSENT", "Sending isn't allowed yet", "Reconnect Outlook and accept the \"send mail\" permission to send email from the portal.");
+        // From here on the send isn't tied to the browser request: closing the tab mid-send must not leave it half done.
+        ct = CancellationToken.None;
 
         var token = await sync.AccessTokenAsync(db, auth, conn, ct);
         var client = http.CreateClient("microsoft");
@@ -478,10 +573,12 @@ public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync syn
                     },
                 }, userId, ct);
             }
-            catch (AppException e) when (e.Code is "MAIL_SEND_CONSENT" or "MAIL_ORIGINAL_GONE" or "MAIL_ERROR")
+            catch (AppException e) when (e.Code is "MAIL_SEND_CONSENT" or "MAIL_ORIGINAL_GONE")
             {
                 // The thread can't be answered (original deleted/moved, or the tenant blocks replies): send it as a new email instead
                 // of failing, so the follow-up still goes out. It lands in the same conversation for most mail apps via the "RE:" subject.
+                // Only for these clear refusals: after a timeout or server error the reply may already have gone, and resending it
+                // as a new email sent the vendor the same message twice.
                 log.LogInformation("Reply in thread failed ({Code}); sent as a new email for user {User}", e.Code, userId);
                 var subject = string.IsNullOrWhiteSpace(mail.Subject) ? "RE:" : mail.Subject.StartsWith("RE:", StringComparison.OrdinalIgnoreCase) ? mail.Subject : "RE: " + mail.Subject;
                 await SendNewAsync(subject);
@@ -495,9 +592,18 @@ public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync syn
         using var req = new HttpRequestMessage(method, url);
         req.Headers.Authorization = new("Bearer", token);
         if (body != null) req.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-        using var res = await client.SendAsync(req, ct);
+        HttpResponseMessage res;
+        // A send that Outlook hasn't confirmed in 30 seconds has almost always gone through; don't keep the user waiting a full minute.
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (method == HttpMethod.Post) limit.CancelAfter(TimeSpan.FromSeconds(30));
+        try { res = await client.SendAsync(req, limit.Token); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw Unconfirmed(); }   // our time limit, not the user
+        catch (HttpRequestException) when (method == HttpMethod.Post) { throw Unconfirmed(); }       // connection dropped mid-send
+        using var _ = res;
         var text = await res.Content.ReadAsStringAsync(ct);
         if (res.IsSuccessStatusCode) return text.Length > 0 ? JsonNode.Parse(text) : null;
+        // A server error or gateway timeout on a send doesn't mean it didn't go: Outlook often sends and then fails to answer.
+        if (method == HttpMethod.Post && (int)res.StatusCode >= 500) { log.LogWarning("Graph send {Path} answered {Status}", new Uri(url).AbsolutePath, (int)res.StatusCode); throw Unconfirmed(); }
 
         var code = "";
         // The error code is only used to pick a clearer message; an unreadable body falls through to the status-code handling.
@@ -511,4 +617,7 @@ public sealed class MailSender(AppDbContext db, MicrosoftAuth auth, MailSync syn
             throw new AppException(413, "MAIL_TOO_LARGE", "Attachments too large", "Outlook rejected the email size. Keep attachments under 3 MB in total.");
         throw new AppException(502, "MAIL_ERROR", "Couldn't send the email", "Outlook returned an error. Try again in a minute.");
     }
+
+    private static AppException Unconfirmed() => new(504, "MAIL_UNCONFIRMED", "Outlook didn't confirm the send",
+        "Outlook took too long to answer. The email has most likely been sent: check your Sent Items in Outlook before sending it again.");
 }

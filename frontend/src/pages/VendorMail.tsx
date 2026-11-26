@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, MailConnection, MailSummary, Reminder, VendorEmail, VendorInfo } from '../api';
+import { api, InboxDraft, MailConnection, MailSummary, Reminder, VendorEmail, VendorInfo } from '../api';
 import { useAuth } from '../auth';
 import { ComposeDialog } from '../compose';
 import { TemplatesPanel } from '../templates';
 import { FollowUpsPanel, RemindDialog, remindersChanged, useDueReminders } from '../followups';
+import { refreshMail } from '../inboxWatch';
 import { Alert, Empty, Field, FieldErrors, Modal, Spinner, ago, useConfirm, useErrorHandler, useToast } from '../ui';
 
 type Tab = 'activity' | 'followups' | 'vendors' | 'recruiters' | 'directory' | 'templates';
@@ -25,7 +26,23 @@ export default function VendorMail() {
   const [emails, setEmails] = useState<VendorEmail[] | null>(null);
   const [edit, setEdit] = useState<VendorInfo | 'new' | null>(null);
   const [newName, setNewName] = useState('');
-  const [compose, setCompose] = useState<{ replyTo?: VendorEmail; to?: string; followUp?: boolean; consultantId?: number | null } | null>(null);
+  const [compose, setCompose] = useState<{ replyTo?: VendorEmail; to?: string; followUp?: boolean; consultantId?: number | null; draft?: InboxDraft } | null>(null);
+  const [drafting, setDrafting] = useState<number | null>(null);
+  /**
+   * Reply / Follow up: opens the email window with a ready draft (the AI Inbox writer, or rules when AI is off). Nothing is sent
+   * until the executive sends it or copies it into Outlook. If the draft can't be written, the window opens with the Follow-up
+   * template (follow-ups) or empty (replies) as before.
+   */
+  const openReply = async (e: VendorEmail, followUp: boolean, consultantId?: number | null) => {
+    setDrafting(e.id);
+    let draft: InboxDraft | undefined;
+    try {
+      draft = await api<InboxDraft>(`/inbox/vendor-emails/${e.id}/draft`, { method: 'POST' });
+      if (draft.notice) notify('info', 'Built-in engine wrote the draft', draft.notice);
+    } catch { /* fall back to the template / an empty reply */ }
+    finally { setDrafting(null); }
+    setCompose({ replyTo: e, followUp, consultantId, draft });
+  };
   const [discover, setDiscover] = useState(false);
   const team = user?.dataScope !== 'OWN' && scope !== 'mine';
 
@@ -34,13 +51,26 @@ export default function VendorMail() {
   useEffect(loadConn, [loadConn]);
   useEffect(loadSummary, [loadSummary]);
 
-  const loadEmails = useCallback(() => {
+  // quiet = background refresh: keep the list on screen until the new one arrives, and don't pop errors.
+  const loadEmails = useCallback((quiet = false) => {
     if (tab !== 'activity') return;
-    setEmails(null);
+    if (!quiet) setEmails(null);
     api<VendorEmail[]>('/mail/emails', { query: { scope, days, q: f.q, vendorId: f.vendorId, userId: f.userId, direction: f.direction, } })
-      .then(setEmails).catch(e => { setEmails([]); onError(e); });
+      .then(setEmails).catch(e => { if (!quiet) { setEmails([]); onError(e); } });
   }, [tab, scope, days, f, onError]);
-  useEffect(loadEmails, [loadEmails]);
+  useEffect(() => loadEmails(), [loadEmails]);
+
+  // New mail: the app reads Outlook every 20 seconds while the tab is visible and fires 'cbs:inbox'; reload quietly.
+  useEffect(() => {
+    const h = () => {
+      api<MailSummary>('/mail/summary', { query: { scope, days } }).then(setSummary).catch(() => {});
+      api<MailConnection>('/mail/connection').then(setConn).catch(() => {});
+      loadEmails(true);
+    };
+    window.addEventListener('cbs:inbox', h);
+    refreshMail();
+    return () => window.removeEventListener('cbs:inbox', h);
+  }, [scope, days, loadEmails]);
 
   // Back from connecting Outlook.
   useEffect(() => {
@@ -65,6 +95,19 @@ export default function VendorMail() {
     } catch (e) { onError(e); }
     finally { setSyncing(false); }
   };
+  /** Scans every connected mailbox and adds the clear vendors (the server also does this by itself every few hours). */
+  const [autoAdding, setAutoAdding] = useState(false);
+  const autoAdd = async () => {
+    setAutoAdding(true);
+    try {
+      const r = await api<{ added: number; vendors: string[] }>('/vendors/auto-add', { method: 'POST' });
+      if (r.added) notify('success', `Added ${r.added} vendor${r.added === 1 ? '' : 's'}`,
+        `${r.vendors.slice(0, 6).join(', ')}${r.added > 6 ? '…' : ''}. Their emails from the last 30 days appear here within a minute.`);
+      else notify('info', 'No new vendors found', 'Every clear vendor in the mailboxes is already in the list. "Review suggestions" shows the less certain ones.');
+      loadConn(); loadSummary();
+      setTimeout(() => { loadSummary(); loadEmails(true); }, 45_000);
+    } catch (e) { onError(e); } finally { setAutoAdding(false); }
+  };
   const disconnect = async () => {
     if (!await confirm({ title: 'Stop tracking Outlook?', message: 'New vendor emails will no longer be tracked. Emails already tracked stay in the history.', okLabel: 'Disconnect', danger: true })) return;
     try { await api('/mail/connection', { method: 'DELETE' }); notify('success', 'Outlook disconnected'); loadConn(); } catch (e) { onError(e); }
@@ -85,11 +128,10 @@ export default function VendorMail() {
 
       {conn && <ConnectionCard conn={conn} syncing={syncing} onConnect={connect} onSync={syncNow} onDisconnect={disconnect} />}
       {conn?.configured && conn.vendors === 0 && (
-        <Alert type="warning" title="No vendors set up yet">
-          Emails are only tracked for vendors in the vendor list. {can('vendors.manage') ? <>Let the app find them in your Outlook, or add them under "Vendor list".
-            <button className="btn btn-sm btn-primary" style={{ marginLeft: 8 }} onClick={() => setDiscover(true)}>✦ Find vendors in Outlook</button></>
-            : <>Ask your Team Lead to add vendors and their email domains.{conn.connected && <> You can see which vendors you work with first.
-              <button className="btn btn-sm btn-primary" style={{ marginLeft: 8 }} onClick={() => setDiscover(true)}>✦ Vendors in my Outlook</button></>}</>}
+        <Alert type="info" title="Finding your vendors">
+          The app adds the vendors your team emails by itself (a few minutes after start-up, then every 6 hours), then shows their past emails here.
+          {can('vendors.manage') && <button className="btn btn-sm btn-primary" style={{ marginLeft: 8 }} onClick={autoAdd} disabled={autoAdding}>
+            {autoAdding ? <><Spinner /> Scanning mailboxes…</> : '✦ Find & add vendors now'}</button>}
         </Alert>)}
 
       <div className="grid g4" style={{ margin: '16px 0' }}>
@@ -113,15 +155,18 @@ export default function VendorMail() {
                 <option value="">Sent and received</option><option value="Out">Sent to vendor</option><option value="In">From vendor</option></select>}
             </div>)}
           {tab === 'directory' && (can('vendors.manage') || conn?.connected) && <div className="flex">
+            {conn?.configured && can('vendors.manage') &&
+              <button className="btn btn-sm btn-outline" onClick={autoAdd} disabled={autoAdding} title="Scan every connected mailbox and add the clear vendors (also runs by itself every 6 hours)">
+                {autoAdding ? <><Spinner dark /> Scanning…</> : '✦ Add vendors automatically'}</button>}
             {conn?.configured && (can('vendors.manage') || conn.connected) &&
-              <button className="btn btn-sm btn-outline" onClick={() => setDiscover(true)}>{can('vendors.manage') ? '✦ Find vendors in Outlook' : '✦ Vendors in my Outlook'}</button>}
+              <button className="btn btn-sm btn-outline" onClick={() => setDiscover(true)}>{can('vendors.manage') ? 'Review suggestions' : '✦ Vendors in my Outlook'}</button>}
             {can('vendors.manage') && <button className="btn btn-sm btn-primary" onClick={() => { setNewName(''); setEdit('new'); }}>+ Add vendor</button>}</div>}
         </div>
 
-        {tab === 'activity' && <EmailTable emails={emails} team={team} awaiting={false} meId={user?.id}
-          onReply={conn?.configured ? e => setCompose({ replyTo: e, followUp: e.awaitingReply, consultantId: e.consultantId }) : undefined} onRemind={setRemind} />}
-        {tab === 'followups' && <FollowUpsPanel onFollowUp={(r: Reminder) => setCompose({ followUp: true, consultantId: r.consultantId,
-          replyTo: { id: r.emailId, direction: 'Out', subject: r.subject, toAddresses: r.toAddresses, fromAddress: '' } as VendorEmail })} />}
+        {tab === 'activity' && <EmailTable emails={emails} team={team} awaiting={false} meId={user?.id} drafting={drafting}
+          onReply={conn?.configured ? e => openReply(e, e.awaitingReply, e.consultantId) : undefined} onRemind={setRemind} />}
+        {tab === 'followups' && <FollowUpsPanel onFollowUp={(r: Reminder) => openReply(
+          { id: r.emailId, direction: 'Out', subject: r.subject, toAddresses: r.toAddresses, fromAddress: '' } as VendorEmail, true, r.consultantId)} />}
 
         {tab === 'vendors' && <div className="tw"><table><thead><tr><th>Vendor</th><th>Sent</th><th>Received</th><th>Awaiting reply</th><th>Last contact</th></tr></thead><tbody>
           {summary?.byVendor.filter(v => v.active || v.sent + v.received > 0).map(v => (
@@ -155,8 +200,9 @@ export default function VendorMail() {
         </div>}
       </div>
 
-      {compose && <ComposeDialog replyTo={compose.replyTo} initial={compose.to ? { to: compose.to } : undefined} onClose={() => setCompose(null)}
-        templateCategory={compose.followUp ? 'Follow-up' : undefined} consultantId={compose.consultantId}
+      {compose && <ComposeDialog replyTo={compose.replyTo} onClose={() => setCompose(null)}
+        initial={compose.draft ? { to: compose.draft.to || undefined, body: compose.draft.body } : compose.to ? { to: compose.to } : undefined}
+        templateCategory={compose.followUp && !compose.draft ? 'Follow-up' : undefined} consultantId={compose.consultantId}
         onSent={() => { setTimeout(() => { loadSummary(); loadEmails(); loadConn(); remindersChanged(); window.dispatchEvent(new Event('cbs:reminders-reload')); }, 5000); }} />}
       {remind && <RemindDialog email={remind} onClose={() => setRemind(null)} />}
       {edit && <VendorDialog vendor={edit === 'new' ? null : edit} initialName={newName} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); loadSummary(); loadConn(); }} />}
@@ -184,7 +230,7 @@ function ConnectionCard({ conn, syncing, onConnect, onSync, onDisconnect }: { co
     <div className="card" style={bad ? { borderColor: '#fca5a5' } : undefined}><div className="card-b flex between">
       <div>
         <b>{bad ? 'Outlook needs to be reconnected' : 'Outlook connected'}</b> <span className="muted mono" style={{ fontSize: 12.5 }}>{conn.mailbox}</span>
-        <div className="muted" style={{ fontSize: 13 }}>{bad ? conn.lastError : conn.lastSyncUtc ? `Last checked ${ago(conn.lastSyncUtc)}. New mail is checked every few minutes.` : 'First sync in progress…'}</div>
+        <div className="muted" style={{ fontSize: 13 }}>{bad ? conn.lastError : conn.lastSyncUtc ? `Last checked ${ago(conn.lastSyncUtc)}. New mail is checked automatically every 30 seconds while the app is open.` : 'First sync in progress…'}</div>
       </div>
       <div className="flex">
         {bad ? <button className="btn btn-primary" onClick={onConnect}>Reconnect Outlook</button>
@@ -194,7 +240,7 @@ function ConnectionCard({ conn, syncing, onConnect, onSync, onDisconnect }: { co
     </div></div>);
 }
 
-function EmailTable({ emails, team, awaiting, meId, onReply, onRemind }: { emails: VendorEmail[] | null; team: boolean; awaiting: boolean; meId?: number; onReply?: (e: VendorEmail) => void; onRemind?: (e: VendorEmail) => void }) {
+function EmailTable({ emails, team, awaiting, meId, onReply, onRemind, drafting }: { emails: VendorEmail[] | null; team: boolean; awaiting: boolean; meId?: number; onReply?: (e: VendorEmail) => void; onRemind?: (e: VendorEmail) => void; drafting?: number | null }) {
   if (emails === null) return <Empty><Spinner dark /> Loading emails…</Empty>;
   if (emails.length === 0) return <Empty>{awaiting ? 'Nothing waiting. Every email sent to a vendor got a reply within 48 hours.' : 'No vendor emails in this period.'}</Empty>;
   return (
@@ -212,7 +258,8 @@ function EmailTable({ emails, team, awaiting, meId, onReply, onRemind }: { email
           <td>{e.consultantName ?? <span className="muted">—</span>}</td>
           {team && <td>{e.userName}</td>}
           <td style={{ whiteSpace: 'nowrap' }}>{e.userId === meId && <>
-            {onReply && <button className="btn btn-sm btn-outline" onClick={() => onReply(e)}>{e.awaitingReply ? 'Follow up' : 'Reply'}</button>}
+            {onReply && <button className="btn btn-sm btn-outline" onClick={() => onReply(e)} disabled={drafting != null} title="Opens a ready draft to review before sending">
+              {drafting === e.id ? <><Spinner dark /> Drafting…</> : e.awaitingReply ? '✉ Follow up' : '✉ Reply'}</button>}
             {onRemind && <button className="btn btn-sm" title="Remind me to follow up" aria-label="Remind me to follow up" onClick={() => onRemind(e)}>⏰</button>}
           </>}</td>
         </tr>))}

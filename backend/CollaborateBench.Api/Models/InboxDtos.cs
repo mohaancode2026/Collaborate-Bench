@@ -44,3 +44,6 @@ public sealed record InboxHomeDto(List<InboxTaskDto> Tasks, List<InboxTaskDto> I
 public sealed record InboxRematchResult(int Jobs, int WithMatches, int Consultants);
 public sealed record InboxShareInput(string? Message);
 public sealed record InboxSyncResult(int Read, string Status, string? Error, int NewItems);
+
+/// <summary>An earlier send of the same consultant to the same vendor or client (shown as a warning before pitching).</summary>
+public sealed record AlreadySentDto(DateTime WhenUtc, string Kind, string Text, string? By);

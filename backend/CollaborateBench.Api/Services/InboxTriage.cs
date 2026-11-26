@@ -35,7 +35,10 @@ public sealed record InboxJob(string Title, string? Client, string? Location, st
     List<string> Skills, int? MinYears, List<string> Visas);
 /// <param name="Id">Outlook's attachment id, used to download it.</param>
 public sealed record InboxAttachment(string Id, string Name, long Size, string? ContentType);
-public sealed record InboxMatch(int ConsultantId, string Name, string Title, int Score, string Why, int Exp, bool ResumeReady);
+/// <summary>A profile that fits a job email. The fields after ResumeReady were added later: matches stored before have them empty
+/// until "Fetch matching profiles" recalculates them.</summary>
+public sealed record InboxMatch(int ConsultantId, string Name, string Title, int Score, string Why, int Exp, bool ResumeReady,
+    string? Visa = null, int SkillPct = 0, decimal Rate = 0, string? Location = null, List<string>? Matched = null, List<string>? Missing = null);
 
 /// <summary>
 /// Reads new mail from the user's Outlook Inbox folder and triages each email: category, priority, a one-line summary,
